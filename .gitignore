@@ -14,3 +14,34 @@ database*.log
 database*.properties
 database*.script
 databases/
+# ---------------------------------------------------------------
+# EGRAPH 实验产物：只保留源码与工具脚本，数据/构建/日志一律不入库
+# ---------------------------------------------------------------
+# Rust e-graph 服务的构建缓存（1.5 GB）
+egraph-server/target/
+
+# coverage/ 目录白名单：只收 PowerShell 工具脚本，
+# 语料(GB 级)、gcov 数据、长跑输出目录、插桩构建全部排除
+coverage/*
+!coverage/sqlite/
+coverage/sqlite/*
+!coverage/sqlite/*.ps1
+
+# 运行时日志与临时产物
+logs/
+trace.txt
+egraph-*.log
+egraph-*.txt
+egraph-*.sql
+run_egraph.*.log
+run-monitor.ps1
+cp_local.txt
+META-INF/
+*.db
+
+# 个人文档，不属于代码
+*.pptx
+*.docx
+~$*
+report1_text.txt
+egraph-server/server-*.txt
