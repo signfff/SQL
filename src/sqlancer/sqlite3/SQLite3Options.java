@@ -79,6 +79,10 @@ public class SQLite3Options implements DBMSSpecificOptions<SQLite3OracleFactory>
     @Parameter(names = { "--max-num-indexes" }, description = "The maximum number of indexes that can be created")
     public int maxNumIndexes = 20;
 
+    @Parameter(names = {
+            "--egraph-input-file" }, description = "Path(s) to SQL replay/corpus files whose SELECT inputs should be used for EGRAPH variants; separate multiple files with ';' on Windows")
+    public String egraphInputFile;
+
     public enum CODDTestModel {
         RANDOM, EXPRESSION, SUBQUERY;
 

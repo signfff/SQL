@@ -43,6 +43,7 @@ import sqlancer.sqlite3.gen.dml.SQLite3DeleteGenerator;
 import sqlancer.sqlite3.gen.dml.SQLite3InsertGenerator;
 import sqlancer.sqlite3.gen.dml.SQLite3StatTableGenerator;
 import sqlancer.sqlite3.gen.dml.SQLite3UpdateGenerator;
+import sqlancer.sqlite3.oracle.SQLite3EGraphInputCorpus;
 import sqlancer.sqlite3.schema.SQLite3Schema.SQLite3Table;
 
 @AutoService(DatabaseProvider.class)
@@ -121,6 +122,14 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
         NORMAL, FTS, RTREE
     }
 
+    private static final Action[] EGRAPH_ACTIONS = {
+            Action.PRAGMA,
+            Action.CREATE_INDEX,
+            Action.INSERT,
+            Action.UPDATE,
+            Action.ANALYZE
+    };
+
     private static int mapActions(SQLite3GlobalState globalState, Action a) {
         int nrPerformed = 0;
         Randomly r = globalState.getRandomly();
@@ -178,13 +187,35 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
         return nrPerformed;
     }
 
+    private static int mapEGraphActions(SQLite3GlobalState globalState, Action a) {
+        Randomly r = globalState.getRandomly();
+        switch (a) {
+        case PRAGMA:
+            return r.getInteger(0, 2);
+        case CREATE_INDEX:
+            return r.getInteger(0, 2);
+        case INSERT:
+            return r.getInteger(1, Math.max(2, Math.min(6, globalState.getOptions().getMaxNumberInserts())));
+        case UPDATE:
+            return r.getInteger(0, 2);
+        case ANALYZE:
+            return r.getInteger(0, 1);
+        default:
+            return 0;
+        }
+    }
+
     @Override
     public void generateDatabase(SQLite3GlobalState globalState) throws Exception {
         Randomly r = new Randomly(SQLite3SpecialStringGenerator::generate);
         globalState.setRandomly(r);
         if (globalState.getDbmsSpecificOptions().generateDatabase) {
+            boolean isEGraph = globalState.getDbmsSpecificOptions().oracles == SQLite3OracleFactory.EGRAPH;
 
             addSensiblePragmaDefaults(globalState);
+            if (isEGraph && SQLite3EGraphInputCorpus.isConfigured(globalState.getDbmsSpecificOptions())) {
+                return;
+            }
             int nrTablesToCreate = 1;
             if (Randomly.getBoolean()) {
                 nrTablesToCreate++;
@@ -195,7 +226,15 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
             int i = 0;
 
             do {
-                SQLQueryAdapter tableQuery = getTableQuery(globalState, i++);
+                SQLQueryAdapter tableQuery;
+                if (isEGraph && i == 0) {
+                    // EGRAPH must have at least one normal table
+                    tableQuery = SQLite3TableGenerator.createTableStatement(
+                            DBMSCommon.createTableName(i), globalState);
+                } else {
+                    tableQuery = getTableQuery(globalState, i);
+                }
+                i++;
                 globalState.executeStatement(tableQuery);
             } while (globalState.getSchema().getDatabaseTables().size() < nrTablesToCreate);
             assert globalState.getSchema().getTables().getTables().size() == nrTablesToCreate;
@@ -205,8 +244,12 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
                         "CREATE VIRTUAL TABLE IF NOT EXISTS stat USING dbstat(main)");
                 globalState.executeStatement(tableQuery);
             }
-            StatementExecutor<SQLite3GlobalState, Action> se = new StatementExecutor<>(globalState, Action.values(),
-                    SQLite3Provider::mapActions, (q) -> {
+            Action[] actions = isEGraph ? EGRAPH_ACTIONS : Action.values();
+            StatementExecutor.ActionMapper<SQLite3GlobalState, Action> actionMapper = isEGraph
+                    ? SQLite3Provider::mapEGraphActions
+                    : SQLite3Provider::mapActions;
+            StatementExecutor<SQLite3GlobalState, Action> se = new StatementExecutor<>(globalState, actions,
+                    actionMapper, (q) -> {
                         if (q.couldAffectSchema() && globalState.getSchema().getDatabaseTables().isEmpty()) {
                             throw new IgnoreMeException();
                         }
@@ -219,10 +262,93 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
             // also do an abort for DEFERRABLE INITIALLY DEFERRED
             query = SQLite3TransactionGenerator.generateRollbackTransaction(globalState);
             globalState.executeStatement(query);
+            if (isEGraph) {
+                replayEGraphInputCorpus(globalState);
+            }
         }
     }
 
-    private void checkTablesForGeneratedColumnLoops(SQLite3GlobalState globalState) throws Exception {
+    public static void ensureEGraphRandomDatabase(SQLite3GlobalState globalState) throws Exception {
+        try {
+            globalState.updateSchema();
+            boolean hasRegularTable = globalState.getSchema().getDatabaseTables().stream()
+                    .anyMatch(t -> !t.isView() && !t.isVirtual() && !t.getColumns().isEmpty());
+            if (hasRegularTable) {
+                return;
+            }
+        } catch (AssertionError ignored) {
+        }
+
+        SQLQueryAdapter tableQuery = SQLite3TableGenerator.createTableStatement(DBMSCommon.createTableName(0),
+                globalState);
+        globalState.executeStatement(tableQuery);
+        globalState.updateSchema();
+        checkTablesForGeneratedColumnLoops(globalState);
+
+        StatementExecutor<SQLite3GlobalState, Action> se = new StatementExecutor<>(globalState, EGRAPH_ACTIONS,
+                SQLite3Provider::mapEGraphActions, (q) -> {
+                    if (q.couldAffectSchema() && globalState.getSchema().getDatabaseTables().isEmpty()) {
+                        throw new IgnoreMeException();
+                    }
+                });
+        se.executeStatements();
+
+        SQLQueryAdapter query = SQLite3TransactionGenerator.generateCommit(globalState);
+        globalState.executeStatement(query);
+        query = SQLite3TransactionGenerator.generateRollbackTransaction(globalState);
+        globalState.executeStatement(query);
+        globalState.updateSchema();
+    }
+
+    private boolean replayEGraphInputCorpus(SQLite3GlobalState globalState) throws Exception {
+        if (!SQLite3EGraphInputCorpus.isConfigured(globalState.getDbmsSpecificOptions())) {
+            return false;
+        }
+        addSensiblePragmaDefaults(globalState);
+        boolean executedSetupStatement = false;
+        boolean schemaChanged = false;
+        for (String statement : SQLite3EGraphInputCorpus.readInitialSetupStatements(globalState.getDbmsSpecificOptions())) {
+            try {
+                SQLQueryAdapter query = new SQLQueryAdapter(statement, corpusStatementCouldAffectSchema(statement));
+                if (query.execute(globalState, false)) {
+                    executedSetupStatement = true;
+                    logExecutedCorpusStatement(globalState, query);
+                    schemaChanged |= query.couldAffectSchema();
+                }
+            } catch (AssertionError ignored) {
+            } catch (RuntimeException ignored) {
+            } catch (Exception ignored) {
+            }
+        }
+        try {
+            if (schemaChanged) {
+                globalState.updateSchema();
+            }
+        } catch (AssertionError ignored) {
+            return false;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+        return executedSetupStatement && !globalState.getSchema().getDatabaseTables().isEmpty();
+    }
+
+    private static boolean corpusStatementCouldAffectSchema(String statement) {
+        String normalized = statement.stripLeading().toUpperCase(java.util.Locale.ROOT);
+        return normalized.matches("(?s)^(CREATE|DROP|ALTER)\\b.*")
+                || normalized.matches("(?s).*\\b(CREATE|DROP|ALTER)\\s+(TABLE|INDEX|VIEW|TRIGGER|VIRTUAL)\\b.*");
+    }
+
+    private static void logExecutedCorpusStatement(SQLite3GlobalState globalState, SQLQueryAdapter query) {
+        if (globalState.getState() != null) {
+            globalState.getState().logStatement(query);
+        }
+        if (globalState.getOptions() != null && globalState.getOptions().logEachSelect()
+                && globalState.getLogger() != null) {
+            globalState.getLogger().writeCurrent(query.getQueryString());
+        }
+    }
+
+    private static void checkTablesForGeneratedColumnLoops(SQLite3GlobalState globalState) throws Exception {
         for (SQLite3Table table : globalState.getSchema().getDatabaseTables()) {
             SQLQueryAdapter q = new SQLQueryAdapter("SELECT * FROM " + table.getName(),
                     ExpectedErrors.from("needs an odd number of arguments", " requires an even number of arguments",
@@ -294,6 +420,11 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
             dataBase.delete();
         }
         String url = "jdbc:sqlite:" + dataBase.getAbsolutePath();
+        try {
+            Class.forName("org.sqlite.JDBC");
+        } catch (ClassNotFoundException e) {
+            throw new SQLException("SQLite JDBC driver is not available on the classpath", e);
+        }
         return new SQLConnection(DriverManager.getConnection(url));
     }
 

@@ -64,11 +64,16 @@ public class SQLite3Schema extends AbstractSchema<SQLite3GlobalState, SQLite3Tab
 
         public SQLite3Column(String name, SQLite3DataType columnType, boolean isInteger, boolean isPrimaryKey,
                 SQLite3CollateSequence collate) {
+            this(name, columnType, isInteger, isPrimaryKey, collate, false);
+        }
+
+        public SQLite3Column(String name, SQLite3DataType columnType, boolean isInteger, boolean isPrimaryKey,
+                SQLite3CollateSequence collate, boolean generated) {
             super(name, null, columnType);
             this.isInteger = isInteger;
             this.isPrimaryKey = isPrimaryKey;
             this.collate = collate;
-            this.generated = false;
+            this.generated = generated;
             assert !isInteger || columnType == SQLite3DataType.INT;
         }
 
@@ -280,6 +285,9 @@ public class SQLite3Schema extends AbstractSchema<SQLite3GlobalState, SQLite3Tab
                 while (rs.next()) {
                     String tableName = rs.getString("name");
                     String tableType = rs.getString("category");
+                    if (tableName == null || tableType == null) {
+                        continue;
+                    }
                     boolean isReadOnly;
                     if (databaseTables.stream().anyMatch(t -> t.getName().contentEquals(tableName))) {
                         continue;
@@ -326,6 +334,9 @@ public class SQLite3Schema extends AbstractSchema<SQLite3GlobalState, SQLite3Tab
                     "SELECT name FROM SQLite_master WHERE type = 'index' UNION SELECT name FROM sqlite_temp_master WHERE type='index'")) {
                 while (rs.next()) {
                     String name = rs.getString(1);
+                    if (name == null) {
+                        continue;
+                    }
                     if (name.contains("_autoindex")) {
                         continue;
                     }
@@ -366,16 +377,18 @@ public class SQLite3Schema extends AbstractSchema<SQLite3GlobalState, SQLite3Tab
                     }
                     String columnTypeString = columnRs.getString("type");
                     boolean isPrimaryKey = columnRs.getBoolean("pk");
+                    int hidden = columnRs.getInt("hidden");
+                    boolean isGenerated = hidden == 2 || hidden == 3;
                     SQLite3DataType columnType = getColumnType(columnTypeString);
                     SQLite3CollateSequence collate;
-                    if (!isDbStatsTable) {
+                    if (!isDbStatsTable && !isView && columnCreateIndex < columnCreates.length) {
                         String columnSql = columnCreates[columnCreateIndex++];
                         collate = getCollate(columnSql, isView);
                     } else {
                         collate = SQLite3CollateSequence.BINARY;
                     }
                     databaseColumns.add(new SQLite3Column(columnName, columnType,
-                            columnTypeString.contentEquals("INTEGER"), isPrimaryKey, collate));
+                            columnTypeString.contentEquals("INTEGER"), isPrimaryKey, collate, isGenerated));
                 }
             }
         } catch (SQLException e) {
@@ -408,7 +421,7 @@ public class SQLite3Schema extends AbstractSchema<SQLite3GlobalState, SQLite3Tab
     }
 
     public static SQLite3DataType getColumnType(String columnTypeString) {
-        String trimmedTypeString = columnTypeString.toUpperCase().replace(" GENERATED ALWAYS", "");
+        String trimmedTypeString = columnTypeString.toUpperCase().replace(" GENERATED ALWAYS", "").trim();
         SQLite3DataType columnType;
         switch (trimmedTypeString) {
         case "TEXT":
@@ -435,9 +448,25 @@ public class SQLite3Schema extends AbstractSchema<SQLite3GlobalState, SQLite3Tab
             columnType = SQLite3DataType.NULL;
             break;
         default:
-            throw new AssertionError(trimmedTypeString);
+            columnType = getColumnTypeByAffinity(trimmedTypeString);
         }
         return columnType;
+    }
+
+    private static SQLite3DataType getColumnTypeByAffinity(String typeName) {
+        if (typeName.contains("INT")) {
+            return SQLite3DataType.INT;
+        }
+        if (typeName.contains("CHAR") || typeName.contains("CLOB") || typeName.contains("TEXT")) {
+            return SQLite3DataType.TEXT;
+        }
+        if (typeName.contains("BLOB")) {
+            return SQLite3DataType.BINARY;
+        }
+        if (typeName.contains("REAL") || typeName.contains("FLOA") || typeName.contains("DOUB")) {
+            return SQLite3DataType.REAL;
+        }
+        return SQLite3DataType.REAL;
     }
 
     public SQLite3Table getRandomVirtualTable() {

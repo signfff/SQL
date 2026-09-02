@@ -65,6 +65,7 @@ public class SQLite3ExpressionGenerator implements ExpressionGenerator<SQLite3Ex
     private boolean allowAggregateFunctions;
     private boolean allowSubqueries;
     private boolean allowAggreates;
+    private boolean egraphMode;
 
     public SQLite3ExpressionGenerator(SQLite3ExpressionGenerator other) {
         this.rw = other.rw;
@@ -78,6 +79,7 @@ public class SQLite3ExpressionGenerator implements ExpressionGenerator<SQLite3Ex
         this.allowAggregateFunctions = other.allowAggregateFunctions;
         this.allowSubqueries = other.allowSubqueries;
         this.allowAggreates = other.allowAggreates;
+        this.egraphMode = other.egraphMode;
     }
 
     private enum LiteralValueType {
@@ -122,6 +124,12 @@ public class SQLite3ExpressionGenerator implements ExpressionGenerator<SQLite3Ex
     public SQLite3ExpressionGenerator allowSubqueries() {
         SQLite3ExpressionGenerator gen = new SQLite3ExpressionGenerator(this);
         gen.allowSubqueries = true;
+        return gen;
+    }
+
+    public SQLite3ExpressionGenerator setEgraphMode() {
+        SQLite3ExpressionGenerator gen = new SQLite3ExpressionGenerator(this);
+        gen.egraphMode = true;
         return gen;
     }
 
@@ -278,6 +286,22 @@ public class SQLite3ExpressionGenerator implements ExpressionGenerator<SQLite3Ex
         if (!globalState.getDbmsSpecificOptions().testIn) {
             list.remove(ExpressionType.IN_OPERATOR);
         }
+        // EGRAPH mode: only generate expression types that the egraph rewrite engine can handle
+        if (egraphMode) {
+            list.remove(ExpressionType.CAST_EXPRESSION);
+            list.remove(ExpressionType.FUNCTION);
+            list.remove(ExpressionType.IN_OPERATOR);
+            list.remove(ExpressionType.COLLATE);
+            list.remove(ExpressionType.CASE_OPERATOR);
+            list.remove(ExpressionType.MATCH);
+            list.remove(ExpressionType.AGGREGATE_FUNCTION);
+            list.remove(ExpressionType.ROW_VALUE_COMPARISON);
+            list.remove(ExpressionType.RANDOM_QUERY);
+            list.add(ExpressionType.BINARY_OPERATOR);
+            list.add(ExpressionType.BINARY_OPERATOR);
+            list.add(ExpressionType.BINARY_OPERATOR);
+            list.add(ExpressionType.BINARY_COMPARISON_OPERATOR);
+        }
         ExpressionType randomExpressionType = Randomly.fromList(list);
         switch (randomExpressionType) {
         case AND_OR_CHAIN:
@@ -423,7 +447,7 @@ public class SQLite3ExpressionGenerator implements ExpressionGenerator<SQLite3Ex
         CHAR("CHAR", 1, Attribute.VARIADIC), //
         COALESCE("COALESCE", 2, Attribute.VARIADIC), //
         GLOB("GLOB", 2), //
-        HEX("HEX", 1), //
+        // HEX("HEX", 1), //  disabled: internal evaluator returns null, causing oracle mismatches
         IFNULL("IFNULL", 2), //
         INSTR("INSTR", 2), //
         LAST_INSERT_ROWID("LAST_INSERT_ROWID", 0, Attribute.NONDETERMINISTIC), //
@@ -646,7 +670,11 @@ public class SQLite3ExpressionGenerator implements ExpressionGenerator<SQLite3Ex
     private SQLite3Expression getBinaryOperator(int depth) {
         SQLite3Expression leftExpression = getRandomExpression(depth + 1);
         // TODO: operators
-        BinaryOperator operator = BinaryOperator.getRandomOperator();
+        BinaryOperator operator = egraphMode
+                ? Randomly.fromOptions(BinaryOperator.MULTIPLY, BinaryOperator.MULTIPLY, BinaryOperator.DIVIDE,
+                        BinaryOperator.DIVIDE, BinaryOperator.REMAINDER, BinaryOperator.PLUS, BinaryOperator.PLUS,
+                        BinaryOperator.MINUS, BinaryOperator.MINUS, BinaryOperator.AND, BinaryOperator.OR)
+                : BinaryOperator.getRandomOperator();
         // while (operator == BinaryOperator.DIVIDE) {
         // operator = BinaryOperator.getRandomOperator();
         // }
@@ -665,7 +693,9 @@ public class SQLite3ExpressionGenerator implements ExpressionGenerator<SQLite3Ex
 
     private SQLite3Expression getBinaryComparisonOperator(int depth) {
         SQLite3Expression leftExpression = getRandomExpression(depth + 1);
-        BinaryComparisonOperator operator = BinaryComparisonOperator.getRandomOperator();
+        BinaryComparisonOperator operator = egraphMode
+                ? BinaryComparisonOperator.getRandomRowValueOperator()   // no IS/IS_NOT
+                : BinaryComparisonOperator.getRandomOperator();
         SQLite3Expression rightExpression = getRandomExpression(depth + 1);
         return new SQLite3Expression.BinaryComparisonOperation(leftExpression, rightExpression, operator);
     }
@@ -680,7 +710,9 @@ public class SQLite3ExpressionGenerator implements ExpressionGenerator<SQLite3Ex
     // complete
     public SQLite3Expression getRandomUnaryOperator(int depth) {
         SQLite3Expression subExpression = getRandomExpression(depth + 1);
-        UnaryOperator unaryOperation = Randomly.fromOptions(UnaryOperator.values());
+        UnaryOperator unaryOperation = egraphMode
+                ? Randomly.fromOptions(UnaryOperator.MINUS, UnaryOperator.PLUS, UnaryOperator.NOT)
+                : Randomly.fromOptions(UnaryOperator.values());
         return new SQLite3UnaryOperation(unaryOperation, subExpression);
     }
 

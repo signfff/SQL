@@ -63,15 +63,15 @@ public class SQLite3Function extends SQLite3Expression {
 
         },
 
-        HEX(1, "HEX") {
-            @Override
-            public SQLite3Constant apply(SQLite3Constant... args) {
-                return null;
-                // SQLite3Constant binaryValue = SQLite3Cast.castToBlob(args[0]);
-                // return
-                // SQLite3Constant.createTextConstant(binaryValue.getStringRepresentation());
-            }
-        },
+        // HEX(1, "HEX") {
+        //     @Override
+        //     public SQLite3Constant apply(SQLite3Constant... args) {
+        //         return null;
+        //         // SQLite3Constant binaryValue = SQLite3Cast.castToBlob(args[0]);
+        //         // return
+        //         // SQLite3Constant.createTextConstant(binaryValue.getStringRepresentation());
+        //     }
+        // },
 
         LOWER(1, "LOWER") {
             @Override
