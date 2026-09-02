@@ -1,0 +1,15 @@
+[package]
+name = "egraph-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.6"
+egg = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+sqlparser = "0.62"
+base64 = "0.13"
+tokio = { version = "1.0", features = ["full"] }
+rand = "0.8"
+regex = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }

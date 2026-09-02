@@ -1,0 +1,2075 @@
+use egg::{rewrite, EGraph, FromOp, Id, Language, RecExpr, Rewrite, Runner};
+use rusqlite::Connection;
+use sqlparser::ast::{BinaryOperator, Expr as SqlExpr, Ident, UnaryOperator};
+use sqlparser::tokenizer::Span;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::str::FromStr;
+use std::sync::LazyLock;
+
+/// 变体校验日志默认静默：egraph-server 常以 `cargo run --release` 前台运行，
+/// 长跑时每个变体一行会把那个终端刷满。设 EGRAPH_LOG_VALIDATE=1 打开。
+static LOG_VALIDATE: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var("EGRAPH_LOG_VALIDATE")
+        .map(|v| !matches!(v.trim(), "" | "0" | "false" | "FALSE" | "False"))
+        .unwrap_or(false)
+});
+
+macro_rules! validate_log {
+    ($($arg:tt)*) => {
+        if *LOG_VALIDATE {
+            eprintln!($($arg)*);
+        }
+    };
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum SqlLang {
+    And([Id; 2]),
+    Or([Id; 2]),
+    Not([Id; 1]),
+    Eq([Id; 2]),
+    NotEq([Id; 2]),
+    Lt([Id; 2]),
+    Gt([Id; 2]),
+    LtEq([Id; 2]),
+    GtEq([Id; 2]),
+    Add([Id; 2]),
+    Sub([Id; 2]),
+    Mul([Id; 2]),
+    Div([Id; 2]),
+    Neg([Id; 1]),
+    BitNot([Id; 1]),
+    Between([Id; 3]),
+    IsNull([Id; 1]),
+    IsNotNull([Id; 1]),
+    IsFalse([Id; 1]),
+    IsTrue([Id; 1]),
+    IsNotFalse([Id; 1]),
+    IsNotTrue([Id; 1]),
+    IsUnknown([Id; 1]),
+    IsNotUnknown([Id; 1]),
+    Concat([Id; 2]),    // || string concatenation
+    BitAnd([Id; 2]),    // & bitwise AND
+    BitOr([Id; 2]),     // | bitwise OR
+    Remainder([Id; 2]), // % modulo
+    Symbol(u64),
+}
+
+impl Language for SqlLang {
+    fn matches(&self, other: &Self) -> bool {
+        std::mem::discriminant(self) == std::mem::discriminant(other)
+    }
+
+    fn children(&self) -> &[Id] {
+        match self {
+            SqlLang::And(c) => c,
+            SqlLang::Or(c) => c,
+            SqlLang::Not(c) => c,
+            SqlLang::Eq(c) => c,
+            SqlLang::NotEq(c) => c,
+            SqlLang::Lt(c) => c,
+            SqlLang::Gt(c) => c,
+            SqlLang::LtEq(c) => c,
+            SqlLang::GtEq(c) => c,
+            SqlLang::Add(c) => c,
+            SqlLang::Sub(c) => c,
+            SqlLang::Mul(c) => c,
+            SqlLang::Div(c) => c,
+            SqlLang::Neg(c) => c,
+            SqlLang::BitNot(c) => c,
+            SqlLang::Between(c) => c,
+            SqlLang::IsNull(c) => c,
+            SqlLang::IsNotNull(c) => c,
+            SqlLang::IsFalse(c) => c,
+            SqlLang::IsTrue(c) => c,
+            SqlLang::IsNotFalse(c) => c,
+            SqlLang::IsNotTrue(c) => c,
+            SqlLang::IsUnknown(c) => c,
+            SqlLang::IsNotUnknown(c) => c,
+            SqlLang::Concat(c) => c,
+            SqlLang::BitAnd(c) => c,
+            SqlLang::BitOr(c) => c,
+            SqlLang::Remainder(c) => c,
+            SqlLang::Symbol(_) => &[],
+        }
+    }
+
+    fn children_mut(&mut self) -> &mut [Id] {
+        match self {
+            SqlLang::And(c) => c,
+            SqlLang::Or(c) => c,
+            SqlLang::Not(c) => c,
+            SqlLang::Eq(c) => c,
+            SqlLang::NotEq(c) => c,
+            SqlLang::Lt(c) => c,
+            SqlLang::Gt(c) => c,
+            SqlLang::LtEq(c) => c,
+            SqlLang::GtEq(c) => c,
+            SqlLang::Add(c) => c,
+            SqlLang::Sub(c) => c,
+            SqlLang::Mul(c) => c,
+            SqlLang::Div(c) => c,
+            SqlLang::Neg(c) => c,
+            SqlLang::BitNot(c) => c,
+            SqlLang::Between(c) => c,
+            SqlLang::IsNull(c) => c,
+            SqlLang::IsNotNull(c) => c,
+            SqlLang::IsFalse(c) => c,
+            SqlLang::IsTrue(c) => c,
+            SqlLang::IsNotFalse(c) => c,
+            SqlLang::IsNotTrue(c) => c,
+            SqlLang::IsUnknown(c) => c,
+            SqlLang::IsNotUnknown(c) => c,
+            SqlLang::Concat(c) => c,
+            SqlLang::BitAnd(c) => c,
+            SqlLang::BitOr(c) => c,
+            SqlLang::Remainder(c) => c,
+            SqlLang::Symbol(_) => &mut [],
+        }
+    }
+}
+
+impl FromOp for SqlLang {
+    type Error = String;
+
+    fn from_op(op: &str, children: Vec<Id>) -> Result<Self, Self::Error> {
+        match op {
+            "and" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("and: expected 2 children"))?;
+                Ok(SqlLang::And(arr))
+            }
+            "or" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("or: expected 2 children"))?;
+                Ok(SqlLang::Or(arr))
+            }
+            "not" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("not: expected 1 child"))?;
+                Ok(SqlLang::Not(arr))
+            }
+            "=" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("=: expected 2 children"))?;
+                Ok(SqlLang::Eq(arr))
+            }
+            "<>" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("<>: expected 2 children"))?;
+                Ok(SqlLang::NotEq(arr))
+            }
+            "<" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("<: expected 2 children"))?;
+                Ok(SqlLang::Lt(arr))
+            }
+            ">" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!(">: expected 2 children"))?;
+                Ok(SqlLang::Gt(arr))
+            }
+            "<=" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("<=: expected 2 children"))?;
+                Ok(SqlLang::LtEq(arr))
+            }
+            ">=" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!(">=: expected 2 children"))?;
+                Ok(SqlLang::GtEq(arr))
+            }
+            "+" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("+: expected 2 children"))?;
+                Ok(SqlLang::Add(arr))
+            }
+            "-" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("-: expected 2 children"))?;
+                Ok(SqlLang::Sub(arr))
+            }
+            "*" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("*: expected 2 children"))?;
+                Ok(SqlLang::Mul(arr))
+            }
+            "/" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("/: expected 2 children"))?;
+                Ok(SqlLang::Div(arr))
+            }
+            "neg" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("neg: expected 1 child"))?;
+                Ok(SqlLang::Neg(arr))
+            }
+            "bitnot" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("bitnot: expected 1 child"))?;
+                Ok(SqlLang::BitNot(arr))
+            }
+            "between" => {
+                let arr: [Id; 3] = children
+                    .try_into()
+                    .map_err(|_| format!("between: expected 3 children"))?;
+                Ok(SqlLang::Between(arr))
+            }
+            "isnull" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("isnull: expected 1 child"))?;
+                Ok(SqlLang::IsNull(arr))
+            }
+            "isnotnull" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("isnotnull: expected 1 child"))?;
+                Ok(SqlLang::IsNotNull(arr))
+            }
+            "isfalse" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("isfalse: expected 1 child"))?;
+                Ok(SqlLang::IsFalse(arr))
+            }
+            "istrue" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("istrue: expected 1 child"))?;
+                Ok(SqlLang::IsTrue(arr))
+            }
+            "isnotfalse" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("isnotfalse: expected 1 child"))?;
+                Ok(SqlLang::IsNotFalse(arr))
+            }
+            "isnottrue" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("isnottrue: expected 1 child"))?;
+                Ok(SqlLang::IsNotTrue(arr))
+            }
+            "isunknown" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("isunknown: expected 1 child"))?;
+                Ok(SqlLang::IsUnknown(arr))
+            }
+            "isnotunknown" => {
+                let arr: [Id; 1] = children
+                    .try_into()
+                    .map_err(|_| format!("isnotunknown: expected 1 child"))?;
+                Ok(SqlLang::IsNotUnknown(arr))
+            }
+            "concat" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("concat: expected 2 children"))?;
+                Ok(SqlLang::Concat(arr))
+            }
+            "bitand" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("bitand: expected 2 children"))?;
+                Ok(SqlLang::BitAnd(arr))
+            }
+            "bitor" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("bitor: expected 2 children"))?;
+                Ok(SqlLang::BitOr(arr))
+            }
+            "rem" => {
+                let arr: [Id; 2] = children
+                    .try_into()
+                    .map_err(|_| format!("rem: expected 2 children"))?;
+                Ok(SqlLang::Remainder(arr))
+            }
+            _ => {
+                // Try parsing as a u64 Symbol value
+                op.parse::<u64>()
+                    .map(SqlLang::Symbol)
+                    .map_err(|_| format!("unknown operator: '{}'", op))
+            }
+        }
+    }
+}
+
+impl fmt::Display for SqlLang {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SqlLang::And(_) => write!(f, "and"),
+            SqlLang::Or(_) => write!(f, "or"),
+            SqlLang::Not(_) => write!(f, "not"),
+            SqlLang::Eq(_) => write!(f, "="),
+            SqlLang::NotEq(_) => write!(f, "<>"),
+            SqlLang::Lt(_) => write!(f, "<"),
+            SqlLang::Gt(_) => write!(f, ">"),
+            SqlLang::LtEq(_) => write!(f, "<="),
+            SqlLang::GtEq(_) => write!(f, ">="),
+            SqlLang::Add(_) => write!(f, "+"),
+            SqlLang::Sub(_) => write!(f, "-"),
+            SqlLang::Mul(_) => write!(f, "*"),
+            SqlLang::Div(_) => write!(f, "/"),
+            SqlLang::Neg(_) => write!(f, "neg"),
+            SqlLang::BitNot(_) => write!(f, "bitnot"),
+            SqlLang::Between(_) => write!(f, "between"),
+            SqlLang::IsNull(_) => write!(f, "isnull"),
+            SqlLang::IsNotNull(_) => write!(f, "isnotnull"),
+            SqlLang::IsFalse(_) => write!(f, "isfalse"),
+            SqlLang::IsTrue(_) => write!(f, "istrue"),
+            SqlLang::IsNotFalse(_) => write!(f, "isnotfalse"),
+            SqlLang::IsNotTrue(_) => write!(f, "isnottrue"),
+            SqlLang::IsUnknown(_) => write!(f, "isunknown"),
+            SqlLang::IsNotUnknown(_) => write!(f, "isnotunknown"),
+            SqlLang::Concat(_) => write!(f, "concat"),
+            SqlLang::BitAnd(_) => write!(f, "bitand"),
+            SqlLang::BitOr(_) => write!(f, "bitor"),
+            SqlLang::Remainder(_) => write!(f, "rem"),
+            SqlLang::Symbol(k) => write!(f, "{}", k),
+        }
+    }
+}
+
+impl FromStr for SqlLang {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "and" => Ok(SqlLang::And([Id::from(0), Id::from(0)])),
+            "or" => Ok(SqlLang::Or([Id::from(0), Id::from(0)])),
+            "not" => Ok(SqlLang::Not([Id::from(0)])),
+            "=" => Ok(SqlLang::Eq([Id::from(0), Id::from(0)])),
+            "<>" => Ok(SqlLang::NotEq([Id::from(0), Id::from(0)])),
+            "<" => Ok(SqlLang::Lt([Id::from(0), Id::from(0)])),
+            ">" => Ok(SqlLang::Gt([Id::from(0), Id::from(0)])),
+            "<=" => Ok(SqlLang::LtEq([Id::from(0), Id::from(0)])),
+            ">=" => Ok(SqlLang::GtEq([Id::from(0), Id::from(0)])),
+            "+" => Ok(SqlLang::Add([Id::from(0), Id::from(0)])),
+            "-" => Ok(SqlLang::Sub([Id::from(0), Id::from(0)])),
+            "*" => Ok(SqlLang::Mul([Id::from(0), Id::from(0)])),
+            "/" => Ok(SqlLang::Div([Id::from(0), Id::from(0)])),
+            "neg" => Ok(SqlLang::Neg([Id::from(0)])),
+            "bitnot" => Ok(SqlLang::BitNot([Id::from(0)])),
+            "between" => Ok(SqlLang::Between([Id::from(0), Id::from(0), Id::from(0)])),
+            "isnull" => Ok(SqlLang::IsNull([Id::from(0)])),
+            "isnotnull" => Ok(SqlLang::IsNotNull([Id::from(0)])),
+            "isfalse" => Ok(SqlLang::IsFalse([Id::from(0)])),
+            "istrue" => Ok(SqlLang::IsTrue([Id::from(0)])),
+            "isnotfalse" => Ok(SqlLang::IsNotFalse([Id::from(0)])),
+            "isnottrue" => Ok(SqlLang::IsNotTrue([Id::from(0)])),
+            "isunknown" => Ok(SqlLang::IsUnknown([Id::from(0)])),
+            "isnotunknown" => Ok(SqlLang::IsNotUnknown([Id::from(0)])),
+            "concat" => Ok(SqlLang::Concat([Id::from(0), Id::from(0)])),
+            "bitand" => Ok(SqlLang::BitAnd([Id::from(0), Id::from(0)])),
+            "bitor" => Ok(SqlLang::BitOr([Id::from(0), Id::from(0)])),
+            "rem" => Ok(SqlLang::Remainder([Id::from(0), Id::from(0)])),
+            _ => {
+                // Try parsing as a u64 Symbol value
+                s.parse::<u64>()
+                    .map(SqlLang::Symbol)
+                    .map_err(|_| format!("unknown operator: '{}'", s))
+            }
+        }
+    }
+}
+
+pub type SymbolTable = HashMap<u64, SqlExpr>;
+
+//  sqlparser Expr ?RecExpr<SqlLang>
+
+pub fn sql_expr_to_recexpr(expr: &SqlExpr, source_sql: &str) -> (RecExpr<SqlLang>, SymbolTable) {
+    let mut rec = RecExpr::default();
+    let mut symbols = SymbolTable::new();
+    let mut counter = 0u64;
+    // Dedup map: identical sub-expressions (same column ref, same literal)
+    // share a single Symbol node, so rules like tight-eq (x>=y AND x<=y ?x=y)
+    // can bind the same variable across positions.
+    let mut dedup: HashMap<String, Id> = HashMap::new();
+    sql_expr_to_recexpr_impl(
+        expr,
+        &mut rec,
+        &mut symbols,
+        &mut counter,
+        &mut dedup,
+        source_sql,
+    );
+    (rec, symbols)
+}
+
+fn make_symbol(
+    expr: &SqlExpr,
+    rec: &mut RecExpr<SqlLang>,
+    symbols: &mut SymbolTable,
+    counter: &mut u64,
+    dedup: &mut HashMap<String, Id>,
+    source_sql: &str,
+) -> Id {
+    let symbol_expr = fix_hex_format(expr.clone(), source_sql);
+    let key_str = format!("{}", symbol_expr);
+    if let Some(&existing_id) = dedup.get(&key_str) {
+        return existing_id;
+    }
+    let key = *counter;
+    *counter += 1;
+    symbols.insert(key, symbol_expr);
+    let id = rec.add(SqlLang::Symbol(key));
+    dedup.insert(key_str, id);
+    id
+}
+
+fn sql_expr_to_recexpr_impl(
+    expr: &SqlExpr,
+    rec: &mut RecExpr<SqlLang>,
+    symbols: &mut SymbolTable,
+    counter: &mut u64,
+    dedup: &mut HashMap<String, Id>,
+    source_sql: &str,
+) -> Id {
+    match expr {
+        SqlExpr::BinaryOp { left, op, right } => match op {
+            BinaryOperator::And => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::And([l, r]))
+            }
+            BinaryOperator::Or => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Or([l, r]))
+            }
+            BinaryOperator::Eq => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Eq([l, r]))
+            }
+            BinaryOperator::NotEq => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::NotEq([l, r]))
+            }
+            BinaryOperator::Lt => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Lt([l, r]))
+            }
+            BinaryOperator::Gt => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Gt([l, r]))
+            }
+            BinaryOperator::LtEq => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::LtEq([l, r]))
+            }
+            BinaryOperator::GtEq => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::GtEq([l, r]))
+            }
+            BinaryOperator::Plus => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Add([l, r]))
+            }
+            BinaryOperator::Minus => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Sub([l, r]))
+            }
+            BinaryOperator::Multiply => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Mul([l, r]))
+            }
+            BinaryOperator::Divide => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Div([l, r]))
+            }
+            BinaryOperator::StringConcat => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Concat([l, r]))
+            }
+            BinaryOperator::BitwiseAnd => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::BitAnd([l, r]))
+            }
+            BinaryOperator::BitwiseOr => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::BitOr([l, r]))
+            }
+            BinaryOperator::Modulo => {
+                let l = sql_expr_to_recexpr_impl(left, rec, symbols, counter, dedup, source_sql);
+                let r = sql_expr_to_recexpr_impl(right, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Remainder([l, r]))
+            }
+            _ => make_symbol(expr, rec, symbols, counter, dedup, source_sql),
+        },
+
+        SqlExpr::UnaryOp { op, expr: inner } => match op {
+            UnaryOperator::Not => {
+                let child =
+                    sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Not([child]))
+            }
+            UnaryOperator::Minus => {
+                let child =
+                    sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::Neg([child]))
+            }
+            UnaryOperator::Plus => {
+                // Unary plus is NOT identity in SQLite ?it forces numeric
+                // type coercion (e.g. (+ '123') = 123, but '123' is TEXT).
+                // Treat as opaque Symbol to prevent false simplifications.
+                make_symbol(expr, rec, symbols, counter, dedup, source_sql)
+            }
+            UnaryOperator::BitwiseNot => {
+                let child =
+                    sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+                rec.add(SqlLang::BitNot([child]))
+            }
+            _ => make_symbol(expr, rec, symbols, counter, dedup, source_sql),
+        },
+
+        SqlExpr::Between {
+            expr: inner,
+            negated: false,
+            low,
+            high,
+        } => {
+            let e = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            let lo = sql_expr_to_recexpr_impl(low, rec, symbols, counter, dedup, source_sql);
+            let hi = sql_expr_to_recexpr_impl(high, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::Between([e, lo, hi]))
+        }
+
+        SqlExpr::Between {
+            expr: inner,
+            negated: true,
+            low,
+            high,
+        } => {
+            // NOT BETWEEN = NOT (x BETWEEN lo AND hi)
+            let e = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            let lo = sql_expr_to_recexpr_impl(low, rec, symbols, counter, dedup, source_sql);
+            let hi = sql_expr_to_recexpr_impl(high, rec, symbols, counter, dedup, source_sql);
+            let between = rec.add(SqlLang::Between([e, lo, hi]));
+            rec.add(SqlLang::Not([between]))
+        }
+
+        SqlExpr::IsNull(inner) => {
+            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::IsNull([child]))
+        }
+
+        SqlExpr::IsNotNull(inner) => {
+            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::IsNotNull([child]))
+        }
+
+        SqlExpr::IsFalse(inner) => {
+            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::IsFalse([child]))
+        }
+        SqlExpr::IsTrue(inner) => {
+            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::IsTrue([child]))
+        }
+        SqlExpr::IsNotFalse(inner) => {
+            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::IsNotFalse([child]))
+        }
+        SqlExpr::IsNotTrue(inner) => {
+            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::IsNotTrue([child]))
+        }
+        SqlExpr::IsUnknown(inner) => {
+            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::IsUnknown([child]))
+        }
+        SqlExpr::IsNotUnknown(inner) => {
+            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::IsNotUnknown([child]))
+        }
+
+        SqlExpr::Nested(inner) => {
+            // Parentheses are transparent
+            sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql)
+        }
+
+        // Everything else becomes an opaque Symbol
+        _ => make_symbol(expr, rec, symbols, counter, dedup, source_sql),
+    }
+}
+
+//  RecExpr<SqlLang> ?sqlparser Expr
+
+pub fn recexpr_to_sql_expr(expr: &RecExpr<SqlLang>, symbols: &SymbolTable) -> SqlExpr {
+    let root = Id::from(expr.as_ref().len() - 1);
+    recexpr_to_sql_expr_impl(expr, root, symbols)
+}
+
+fn recexpr_to_sql_expr_impl(expr: &RecExpr<SqlLang>, id: Id, symbols: &SymbolTable) -> SqlExpr {
+    match &expr[id] {
+        SqlLang::Symbol(key) => symbols
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| SqlExpr::Identifier(Ident::new(format!("sym_{}", key)))),
+
+        SqlLang::And([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::And,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Or([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::Or,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Not([c]) => SqlExpr::UnaryOp {
+            op: UnaryOperator::Not,
+            expr: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *c, symbols))),
+        },
+
+        SqlLang::Eq([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::Eq,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::NotEq([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::NotEq,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Lt([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::Lt,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Gt([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::Gt,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::LtEq([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::LtEq,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::GtEq([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::GtEq,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Add([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::Plus,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Sub([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::Minus,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Mul([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::Multiply,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Div([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::Divide,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Concat([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::StringConcat,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::BitAnd([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::BitwiseAnd,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::BitOr([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::BitwiseOr,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Remainder([l, r]) => SqlExpr::BinaryOp {
+            left: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *l, symbols))),
+            op: BinaryOperator::Modulo,
+            right: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *r, symbols))),
+        },
+
+        SqlLang::Neg([c]) => SqlExpr::UnaryOp {
+            op: UnaryOperator::Minus,
+            expr: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *c, symbols))),
+        },
+
+        SqlLang::BitNot([c]) => SqlExpr::UnaryOp {
+            op: UnaryOperator::BitwiseNot,
+            expr: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *c, symbols))),
+        },
+
+        SqlLang::Between([e, lo, hi]) => SqlExpr::Between {
+            expr: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *e, symbols))),
+            negated: false,
+            low: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *lo, symbols))),
+            high: Box::new(wrap_compound(recexpr_to_sql_expr_impl(expr, *hi, symbols))),
+        },
+
+        SqlLang::IsNull([c]) => SqlExpr::IsNull(Box::new(wrap_compound(recexpr_to_sql_expr_impl(
+            expr, *c, symbols,
+        )))),
+
+        SqlLang::IsNotNull([c]) => SqlExpr::IsNotNull(Box::new(wrap_compound(
+            recexpr_to_sql_expr_impl(expr, *c, symbols),
+        ))),
+
+        SqlLang::IsFalse([c]) => SqlExpr::IsFalse(Box::new(wrap_compound(
+            recexpr_to_sql_expr_impl(expr, *c, symbols),
+        ))),
+        SqlLang::IsTrue([c]) => SqlExpr::IsTrue(Box::new(wrap_compound(recexpr_to_sql_expr_impl(
+            expr, *c, symbols,
+        )))),
+        SqlLang::IsNotFalse([c]) => SqlExpr::IsNotFalse(Box::new(wrap_compound(
+            recexpr_to_sql_expr_impl(expr, *c, symbols),
+        ))),
+        SqlLang::IsNotTrue([c]) => SqlExpr::IsNotTrue(Box::new(wrap_compound(
+            recexpr_to_sql_expr_impl(expr, *c, symbols),
+        ))),
+        SqlLang::IsUnknown([c]) => SqlExpr::IsUnknown(Box::new(wrap_compound(
+            recexpr_to_sql_expr_impl(expr, *c, symbols),
+        ))),
+        SqlLang::IsNotUnknown([c]) => SqlExpr::IsNotUnknown(Box::new(wrap_compound(
+            recexpr_to_sql_expr_impl(expr, *c, symbols),
+        ))),
+    }
+}
+
+/// sqlparser represents both SQLite integer hex (`0x...`) and BLOB hex
+/// (`x'...'`) as HexStringLiteral. Convert only tokens whose source span was
+/// `0x...`; leave real BLOB literals as `X'...'`.
+fn fix_hex_format(expr: SqlExpr, source_sql: &str) -> SqlExpr {
+    use sqlparser::ast::{Value, ValueWithSpan};
+
+    fn convert_hex(vws: &ValueWithSpan, source_sql: &str) -> Option<SqlExpr> {
+        if let Value::HexStringLiteral(ref hex) = vws.value {
+            if hex.is_empty() || !is_sqlite_integer_hex_span(source_sql, vws.span) {
+                return None;
+            }
+            Some(SqlExpr::Value(ValueWithSpan {
+                value: Value::Number(format!("0x{}", hex), false),
+                span: vws.span,
+            }))
+        } else {
+            None
+        }
+    }
+
+    match expr {
+        SqlExpr::Value(ref vws) => convert_hex(vws, source_sql).unwrap_or(expr),
+        SqlExpr::BinaryOp { left, op, right } => SqlExpr::BinaryOp {
+            left: Box::new(fix_hex_format(*left, source_sql)),
+            op,
+            right: Box::new(fix_hex_format(*right, source_sql)),
+        },
+        SqlExpr::UnaryOp { op, expr: inner } => SqlExpr::UnaryOp {
+            op,
+            expr: Box::new(fix_hex_format(*inner, source_sql)),
+        },
+        SqlExpr::Between {
+            expr: e,
+            negated,
+            low,
+            high,
+        } => SqlExpr::Between {
+            expr: Box::new(fix_hex_format(*e, source_sql)),
+            negated,
+            low: Box::new(fix_hex_format(*low, source_sql)),
+            high: Box::new(fix_hex_format(*high, source_sql)),
+        },
+        SqlExpr::Nested(inner) => SqlExpr::Nested(Box::new(fix_hex_format(*inner, source_sql))),
+        SqlExpr::IsNull(inner) => SqlExpr::IsNull(Box::new(fix_hex_format(*inner, source_sql))),
+        SqlExpr::IsNotNull(inner) => {
+            SqlExpr::IsNotNull(Box::new(fix_hex_format(*inner, source_sql)))
+        }
+        SqlExpr::IsTrue(inner) => SqlExpr::IsTrue(Box::new(fix_hex_format(*inner, source_sql))),
+        SqlExpr::IsFalse(inner) => SqlExpr::IsFalse(Box::new(fix_hex_format(*inner, source_sql))),
+        SqlExpr::IsNotTrue(inner) => {
+            SqlExpr::IsNotTrue(Box::new(fix_hex_format(*inner, source_sql)))
+        }
+        SqlExpr::IsNotFalse(inner) => {
+            SqlExpr::IsNotFalse(Box::new(fix_hex_format(*inner, source_sql)))
+        }
+        SqlExpr::IsUnknown(inner) => {
+            SqlExpr::IsUnknown(Box::new(fix_hex_format(*inner, source_sql)))
+        }
+        SqlExpr::IsNotUnknown(inner) => {
+            SqlExpr::IsNotUnknown(Box::new(fix_hex_format(*inner, source_sql)))
+        }
+        other => other,
+    }
+}
+
+fn is_sqlite_integer_hex_span(source_sql: &str, span: Span) -> bool {
+    span_text(source_sql, span)
+        .map(|text| {
+            let trimmed = text.trim_start();
+            trimmed.starts_with("0x") || trimmed.starts_with("0X")
+        })
+        .unwrap_or(false)
+}
+
+fn span_text(source_sql: &str, span: Span) -> Option<&str> {
+    if span.start.line == 0 || span.start.column == 0 || span.end.line == 0 || span.end.column == 0
+    {
+        return None;
+    }
+    let start = location_to_byte_offset(source_sql, span.start.line, span.start.column)?;
+    let end = location_to_byte_offset(source_sql, span.end.line, span.end.column)?;
+    source_sql.get(start..end)
+}
+
+fn location_to_byte_offset(source_sql: &str, line: u64, column: u64) -> Option<usize> {
+    let mut current_line = 1u64;
+    let mut current_column = 1u64;
+    for (idx, ch) in source_sql.char_indices() {
+        if current_line == line && current_column == column {
+            return Some(idx);
+        }
+        if ch == '\n' {
+            current_line += 1;
+            current_column = 1;
+        } else {
+            current_column += 1;
+        }
+    }
+    if current_line == line && current_column == column {
+        return Some(source_sql.len());
+    }
+    None
+}
+
+fn wrap_compound(expr: SqlExpr) -> SqlExpr {
+    match &expr {
+        SqlExpr::BinaryOp { .. }
+        | SqlExpr::UnaryOp { .. }
+        | SqlExpr::Between { .. }
+        | SqlExpr::IsNull(_)
+        | SqlExpr::IsNotNull(_)
+        | SqlExpr::IsFalse(_)
+        | SqlExpr::IsNotFalse(_)
+        | SqlExpr::IsTrue(_)
+        | SqlExpr::IsNotTrue(_)
+        | SqlExpr::IsUnknown(_)
+        | SqlExpr::IsNotUnknown(_) => SqlExpr::Nested(Box::new(expr)),
+        _ => expr,
+    }
+}
+
+//  Rewrite rules
+
+fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
+    vec![
+        //  Boolean algebra ?commutativity
+        rewrite!("and-comm"; "(and ?x ?y)" => "(and ?y ?x)"),
+        rewrite!("or-comm"; "(or ?x ?y)" => "(or ?y ?x)"),
+        //  Boolean algebra ?associativity (both directions)
+        rewrite!("and-assoc-l"; "(and (and ?x ?y) ?z)" => "(and ?x (and ?y ?z))"),
+        rewrite!("and-assoc-r"; "(and ?x (and ?y ?z))" => "(and (and ?x ?y) ?z)"),
+        rewrite!("or-assoc-l"; "(or (or ?x ?y) ?z)" => "(or ?x (or ?y ?z))"),
+        rewrite!("or-assoc-r"; "(or ?x (or ?y ?z))" => "(or (or ?x ?y) ?z)"),
+        //  Boolean algebra ?idempotence (disabled: reverse creates spurious nodes)
+        // rewrite!("and-idem"; "(and ?x ?x)" => "?x"),
+        // rewrite!("or-idem"; "(or ?x ?x)" => "?x"),
+        //  Boolean algebra ?absorption (disabled: reverse creates spurious nodes)
+        // rewrite!("and-absorb"; "(and ?x (or ?x ?y))" => "?x"),
+        // rewrite!("or-absorb"; "(or ?x (and ?x ?y))" => "?x"),
+        //  Boolean algebra ?De Morgan
+        rewrite!("de-morgan-and"; "(not (and ?x ?y))" => "(or (not ?x) (not ?y))"),
+        rewrite!("de-morgan-or"; "(not (or ?x ?y))" => "(and (not ?x) (not ?y))"),
+        //  Boolean algebra ?double negation
+        rewrite!("double-neg"; "(not (not ?x))" => "?x"),
+        //  Boolean algebra ?factoring (safe: always compresses)
+        // Reverse of distributive expansion ?pulls out common factor.
+        rewrite!("factor-and"; "(or (and ?x ?y) (and ?x ?z))" => "(and ?x (or ?y ?z))"),
+        rewrite!("factor-or"; "(and (or ?x ?y) (or ?x ?z))" => "(or ?x (and ?y ?z))"),
+        // Distributivity expansion disabled ?causes exponential e-graph explosion.
+        // rewrite!("and-dist-or"; "(and ?x (or ?y ?z))" => "(or (and ?x ?y) (and ?x ?z))"),
+        // rewrite!("or-dist-and"; "(or ?x (and ?y ?z))" => "(and (or ?x ?y) (or ?x ?z))"),
+        //  Comparison symmetry
+        rewrite!("eq-sym"; "(= ?x ?y)" => "(= ?y ?x)"),
+        rewrite!("noteq-sym"; "(<> ?x ?y)" => "(<> ?y ?x)"),
+        rewrite!("gt-to-lt"; "(> ?x ?y)" => "(< ?y ?x)"),
+        rewrite!("lt-to-gt"; "(< ?x ?y)" => "(> ?y ?x)"),
+        rewrite!("gteq-to-lteq"; "(>= ?x ?y)" => "(<= ?y ?x)"),
+        rewrite!("lteq-to-gteq"; "(<= ?x ?y)" => "(>= ?y ?x)"),
+        //  NOT over comparisons
+        rewrite!("not-eq"; "(not (= ?x ?y))" => "(<> ?x ?y)"),
+        rewrite!("not-noteq"; "(not (<> ?x ?y))" => "(= ?x ?y)"),
+        rewrite!("not-gt"; "(not (> ?x ?y))" => "(<= ?x ?y)"),
+        rewrite!("not-lt"; "(not (< ?x ?y))" => "(>= ?x ?y)"),
+        rewrite!("not-gteq"; "(not (>= ?x ?y))" => "(< ?x ?y)"),
+        rewrite!("not-lteq"; "(not (<= ?x ?y))" => "(> ?x ?y)"),
+        //  NOT over BETWEEN
+        rewrite!("not-between"; "(not (between ?x ?lo ?hi))" => "(or (< ?x ?lo) (> ?x ?hi))"),
+        //  Comparison chain compression
+        rewrite!("tight-eq"; "(and (>= ?x ?y) (<= ?x ?y))" => "(= ?x ?y)"),
+        rewrite!("tight-noteq"; "(or (< ?x ?y) (> ?x ?y))" => "(<> ?x ?y)"),
+        //  Arithmetic
+        rewrite!("add-comm"; "(+ ?x ?y)" => "(+ ?y ?x)"),
+        rewrite!("mul-comm"; "(* ?x ?y)" => "(* ?y ?x)"),
+        rewrite!("add-assoc-l"; "(+ (+ ?x ?y) ?z)" => "(+ ?x (+ ?y ?z))"),
+        rewrite!("add-assoc-r"; "(+ ?x (+ ?y ?z))" => "(+ (+ ?x ?y) ?z)"),
+        //  Arithmetic double-negation DISABLED ?negation forces numeric coercion
+        // neg-neg: --x ?x is UNSAFE in SQLite ?- forces numeric coercion.
+        // When x is TEXT, -(-('abc')) = 0 but bare 'abc' ?0.
+        // rewrite!("neg-neg"; "(neg (neg ?x))" => "?x"),
+        rewrite!("sub-to-add"; "(- ?x ?y)" => "(+ ?x (neg ?y))"),
+        rewrite!("add-neg-to-sub"; "(+ ?x (neg ?y))" => "(- ?x ?y)"),
+        //  IS FALSE / IS TRUE / IS UNKNOWN ?canonical form
+        // IS FALSE / IS TRUE ?kept as transparent non-Symbol nodes.  The
+        // obvious rewrites (IsFalseot, IsTrued) are correct as standalone
+        // identities in WHERE context, but egg's compositional extraction can
+        // produce forms like Not(IsFalse(Not(x))) that are NOT equivalent.
+        // Even 500-sample validation + forced edge values cannot guarantee
+        // catching all mismatches in a graph-based e-graph.
+        //
+        // IS UNKNOWN / IS NOT UNKNOWN ?fully equivalent in all SQL contexts,
+        // safe to rewrite.
+        rewrite!("isunknown-to-isnull"; "(isunknown ?x)" => "(isnull ?x)"),
+        rewrite!("isnotunknown-to-isnotnull"; "(isnotunknown ?x)" => "(isnotnull ?x)"),
+        //  IS NULL / IS NOT NULL expansion ?DISABLED
+        // These rules let egg's compositional extraction merge ISNULL/NOTNULL
+        // e-classes with unrelated expressions (e.g. string literals), producing
+        // substitutions like "t0.c0 ISNULL ?NOT(NOT('-531915025'))" (Bug #7309)
+        // and "t0.c0 NOTNULL ?NOT(NOT(t0.c0))" (Bug #12637 ?wrong when c0=0).
+        // NOT(ISNULL) ?ISNOTNULL commutativity is still handled by not-isnull /
+        // not-isnotnull rules below, which are safe.
+        // rewrite!("isnull-expand"; "(isnull ?x)" => "(not (isnotnull ?x))"),
+        // rewrite!("isnotnull-expand"; "(isnotnull ?x)" => "(not (isnull ?x))"),
+        rewrite!("not-isnull"; "(not (isnull ?x))" => "(isnotnull ?x)"),
+        rewrite!("not-isnotnull"; "(not (isnotnull ?x))" => "(isnull ?x)"),
+        //  BETWEEN decomposition ?DISABLED
+        // In SQLite, "x BETWEEN lo AND hi" and "x>=lo AND x<=hi" are NOT equivalent
+        // when operands have mixed types (INT/TEXT/BLOB).  The separate comparisons
+        // change type coercion order, producing false positives (BUG #1, #2, #4).
+        // rewrite!("between-decomp"; "(between ?x ?lo ?hi)" => "(and (>= ?x ?lo) (<= ?x ?hi))"),
+        //  String concatenation ?associative, not commutative
+        rewrite!("concat-assoc-l"; "(concat (concat ?x ?y) ?z)" => "(concat ?x (concat ?y ?z))"),
+        rewrite!("concat-assoc-r"; "(concat ?x (concat ?y ?z))" => "(concat (concat ?x ?y) ?z)"),
+        //  Bitwise AND ?commutativity, associativity (idempotence DISABLED)
+        // bitand-idem: x&x ?x is UNSAFE in SQLite ?& forces numeric coercion.
+        // When x is TEXT ('abc'), (x & x) = 0 but bare x = 'abc'. See BUG #7441.
+        rewrite!("bitand-comm"; "(bitand ?x ?y)" => "(bitand ?y ?x)"),
+        rewrite!("bitand-assoc-l"; "(bitand (bitand ?x ?y) ?z)" => "(bitand ?x (bitand ?y ?z))"),
+        rewrite!("bitand-assoc-r"; "(bitand ?x (bitand ?y ?z))" => "(bitand (bitand ?x ?y) ?z)"),
+        // rewrite!("bitand-idem"; "(bitand ?x ?x)" => "?x"),
+        //  Bitwise OR ?commutativity, associativity (idempotence DISABLED)
+        // bitor-idem: x|x ?x is UNSAFE in SQLite ?| forces numeric coercion.
+        rewrite!("bitor-comm"; "(bitor ?x ?y)" => "(bitor ?y ?x)"),
+        rewrite!("bitor-assoc-l"; "(bitor (bitor ?x ?y) ?z)" => "(bitor ?x (bitor ?y ?z))"),
+        rewrite!("bitor-assoc-r"; "(bitor ?x (bitor ?y ?z))" => "(bitor (bitor ?x ?y) ?z)"),
+        // rewrite!("bitor-idem"; "(bitor ?x ?x)" => "?x"),
+        //  Bitwise NOT (double-negation DISABLED ?forces numeric coercion)
+        // bitnot-double: ~~x ?x is UNSAFE in SQLite ?~ forces numeric coercion.
+        // When x is TEXT, ~(~('abc')) = 0 but bare 'abc' ?0.
+        // rewrite!("bitnot-double"; "(bitnot (bitnot ?x))" => "?x"),
+        rewrite!("bitnot-demorgan-and"; "(bitnot (bitand ?x ?y))" => "(bitor (bitnot ?x) (bitnot ?y))"),
+        rewrite!("bitnot-demorgan-or";  "(bitnot (bitor ?x ?y))" => "(bitand (bitnot ?x) (bitnot ?y))"),
+        //  Modulo: no direct rewrite rules (x % 1 ?0 requires constant detection).
+        //          Remainder is still useful as a non-opaque node ?it allows
+        //          surrounding AND/OR rules to fire instead of treating the
+        //          whole expression as a black-box Symbol.
+    ]
+}
+
+//  E-graph operations
+
+pub fn perform_rewrites(expr: &RecExpr<SqlLang>, iter_limit: usize) -> (EGraph<SqlLang, ()>, Id) {
+    let rules = make_rewrite_rules();
+    let runner = Runner::default()
+        .with_iter_limit(iter_limit)
+        .with_node_limit(5000)
+        .with_time_limit(std::time::Duration::from_secs(3))
+        .with_expr(expr)
+        .run(&rules);
+    let root = runner.roots[0];
+    (runner.egraph, root)
+}
+
+pub fn extract_variants(
+    egraph: &EGraph<SqlLang, ()>,
+    root: Id,
+    max_variants: usize,
+) -> Vec<RecExpr<SqlLang>> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut result = Vec::new();
+
+    // Pure randomized extraction ?no AstSize bias toward the original form.
+    // Each random walk picks a random e-node at every e-class along the
+    // recursion path.  AstSize would always prefer the minimum-cost form
+    // (usually the original), which caps diversity.  Random walks explore
+    // the full e-graph without cost bias.
+    let max_attempts = max_variants * 200;
+    for _ in 0..max_attempts {
+        if result.len() >= max_variants {
+            break;
+        }
+        let expr = extract_randomized(egraph, root);
+        let key = format!("{}", expr);
+        if seen.insert(key) {
+            result.push(expr);
+        }
+    }
+
+    result
+}
+
+fn extract_randomized(egraph: &EGraph<SqlLang, ()>, root: Id) -> RecExpr<SqlLang> {
+    let mut rng = rand::thread_rng();
+    let mut rec = RecExpr::default();
+    let mut path: HashSet<Id> = HashSet::new();
+    extract_randomized_impl(egraph, root, &mut rec, &mut path, &mut rng);
+    rec
+}
+
+fn extract_randomized_impl(
+    egraph: &EGraph<SqlLang, ()>,
+    id: Id,
+    rec: &mut RecExpr<SqlLang>,
+    path: &mut HashSet<Id>,
+    rng: &mut impl rand::Rng,
+) -> Id {
+    // Cycle detection: if we've seen this e-class before, pick a leaf node to break cycle
+    if path.contains(&id) {
+        for node in &egraph[id].nodes {
+            if node.children().is_empty() {
+                return add_node(rec, node);
+            }
+        }
+        // No leaf found, create a dummy symbol
+        return rec.add(SqlLang::Symbol(0));
+    }
+
+    path.insert(id);
+    let nodes = &egraph[id].nodes;
+    let idx = rng.gen_range(0..nodes.len());
+    let node = &nodes[idx];
+
+    let child_ids: Vec<Id> = node
+        .children()
+        .iter()
+        .map(|&child_id| extract_randomized_impl(egraph, child_id, rec, path, rng))
+        .collect();
+
+    path.remove(&id);
+
+    let new_node = make_node(node, &child_ids);
+    rec.add(new_node)
+}
+
+fn make_node(template: &SqlLang, child_ids: &[Id]) -> SqlLang {
+    match template {
+        SqlLang::And(_) => SqlLang::And([child_ids[0], child_ids[1]]),
+        SqlLang::Or(_) => SqlLang::Or([child_ids[0], child_ids[1]]),
+        SqlLang::Not(_) => SqlLang::Not([child_ids[0]]),
+        SqlLang::Eq(_) => SqlLang::Eq([child_ids[0], child_ids[1]]),
+        SqlLang::NotEq(_) => SqlLang::NotEq([child_ids[0], child_ids[1]]),
+        SqlLang::Lt(_) => SqlLang::Lt([child_ids[0], child_ids[1]]),
+        SqlLang::Gt(_) => SqlLang::Gt([child_ids[0], child_ids[1]]),
+        SqlLang::LtEq(_) => SqlLang::LtEq([child_ids[0], child_ids[1]]),
+        SqlLang::GtEq(_) => SqlLang::GtEq([child_ids[0], child_ids[1]]),
+        SqlLang::Add(_) => SqlLang::Add([child_ids[0], child_ids[1]]),
+        SqlLang::Sub(_) => SqlLang::Sub([child_ids[0], child_ids[1]]),
+        SqlLang::Mul(_) => SqlLang::Mul([child_ids[0], child_ids[1]]),
+        SqlLang::Div(_) => SqlLang::Div([child_ids[0], child_ids[1]]),
+        SqlLang::Neg(_) => SqlLang::Neg([child_ids[0]]),
+        SqlLang::BitNot(_) => SqlLang::BitNot([child_ids[0]]),
+        SqlLang::Between(_) => SqlLang::Between([child_ids[0], child_ids[1], child_ids[2]]),
+        SqlLang::IsNull(_) => SqlLang::IsNull([child_ids[0]]),
+        SqlLang::IsNotNull(_) => SqlLang::IsNotNull([child_ids[0]]),
+        SqlLang::IsFalse(_) => SqlLang::IsFalse([child_ids[0]]),
+        SqlLang::IsTrue(_) => SqlLang::IsTrue([child_ids[0]]),
+        SqlLang::IsNotFalse(_) => SqlLang::IsNotFalse([child_ids[0]]),
+        SqlLang::IsNotTrue(_) => SqlLang::IsNotTrue([child_ids[0]]),
+        SqlLang::IsUnknown(_) => SqlLang::IsUnknown([child_ids[0]]),
+        SqlLang::IsNotUnknown(_) => SqlLang::IsNotUnknown([child_ids[0]]),
+        SqlLang::Concat(_) => SqlLang::Concat([child_ids[0], child_ids[1]]),
+        SqlLang::BitAnd(_) => SqlLang::BitAnd([child_ids[0], child_ids[1]]),
+        SqlLang::BitOr(_) => SqlLang::BitOr([child_ids[0], child_ids[1]]),
+        SqlLang::Remainder(_) => SqlLang::Remainder([child_ids[0], child_ids[1]]),
+        SqlLang::Symbol(k) => SqlLang::Symbol(*k),
+    }
+}
+
+fn add_node(rec: &mut RecExpr<SqlLang>, node: &SqlLang) -> Id {
+    match node {
+        SqlLang::Symbol(k) => rec.add(SqlLang::Symbol(*k)),
+        _ => rec.add(SqlLang::Symbol(0)),
+    }
+}
+
+//  Random Sampling Validation
+//
+// For each candidate variant, we generate N random assignments to the opaque
+// Symbol leaves and evaluate both the original and variant expression trees.
+// If they ever disagree, the variant is NOT semantically equivalent and is
+// discarded.  This catches all three classes of false positives:
+//   1. NULL propagation errors (three-valued logic)
+//   2. Type confusion (boolean used in arithmetic position)
+//   3. Literal serialization changes (0x??X'?)
+
+const NUM_SAMPLES: usize = 300;
+const NULL_PROB: f64 = 0.12;
+
+/// SQLite-compatible value for in-memory evaluation.
+///
+/// Bool is NOT a first-class type in SQLite ?TRUE is 1, FALSE is 0.
+/// Cross-type comparisons follow SQLite's affinity rules:
+///   - NULL with anything ?NULL
+///   - Blob > any Text > any Int   (Blob sorts after everything)
+///   - Int ?Text: if Text looks numeric, compare as numbers; else Text > Int
+///   - Bool ?Int/Text: Bool is treated as Int(0/1)
+#[derive(Debug, Clone, PartialEq)]
+enum SqlValue {
+    Null,
+    Bool(bool),
+    Int(i64),
+    Text(String),
+    /// BLOB literal ?in SQLite, BLOBs sort after all numbers and text.
+    Blob,
+}
+
+impl SqlValue {
+    /// SQLite-style comparison.
+    fn partial_cmp(&self, other: &SqlValue) -> Option<std::cmp::Ordering> {
+        use std::cmp::Ordering;
+        // NULL propagates
+        if self.is_null() || other.is_null() {
+            return None;
+        }
+        // Normalise Bool ?Int for cross-type comparison (SQLite has no bool type)
+        let (a, b) = (self.normalise(), other.normalise());
+        match (a.as_ref(), b.as_ref()) {
+            // Blob > everything except another Blob
+            (SqlValue::Blob, SqlValue::Blob) => Some(Ordering::Equal),
+            (SqlValue::Blob, _) => Some(Ordering::Greater),
+            (_, SqlValue::Blob) => Some(Ordering::Less),
+            // Same-type
+            (SqlValue::Int(x), SqlValue::Int(y)) => x.partial_cmp(y),
+            (SqlValue::Text(x), SqlValue::Text(y)) => x.partial_cmp(y),
+            // Text ?Int: try numeric coercion
+            (SqlValue::Text(t), SqlValue::Int(i)) => text_int_cmp(t, *i).map(|o| o.reverse()),
+            (SqlValue::Int(i), SqlValue::Text(t)) => text_int_cmp(t, *i),
+            // Bool normalised to Int already ?should not reach here
+            (SqlValue::Bool(_), _) | (_, SqlValue::Bool(_)) => unreachable!(),
+            // NULL already handled at top of function; Blob* covered above; remaining combos are unreachable
+            _ => unreachable!(),
+        }
+    }
+
+    /// Convert Bool ?Int (SQLite: FALSE=0, TRUE=1).  Other types unchanged.
+    fn normalise(&self) -> Cow<'_, SqlValue> {
+        match self {
+            SqlValue::Bool(false) => Cow::Owned(SqlValue::Int(0)),
+            SqlValue::Bool(true) => Cow::Owned(SqlValue::Int(1)),
+            other => Cow::Borrowed(other),
+        }
+    }
+
+    fn is_null(&self) -> bool {
+        matches!(self, SqlValue::Null)
+    }
+}
+
+use std::borrow::Cow;
+
+/// Compare numeric Text with Int.  If Text represents an integer, compare
+/// numerically; otherwise Text > Int in SQLite.
+fn text_int_cmp(t: &str, i: i64) -> Option<std::cmp::Ordering> {
+    // Try exact integer parse first
+    if let Ok(n) = t.parse::<i64>() {
+        return n.partial_cmp(&i);
+    }
+    // Try float
+    if let Ok(f) = t.parse::<f64>() {
+        return f.partial_cmp(&(i as f64));
+    }
+    // Non-numeric text sorts after all numbers in SQLite
+    Some(std::cmp::Ordering::Greater)
+}
+
+/// Evaluate a RecExpr under a specific assignment of Symbol ids to SqlValues.
+fn eval(
+    expr: &RecExpr<SqlLang>,
+    root: Id,
+    symbols: &SymbolTable,
+    assignment: &HashMap<u64, SqlValue>,
+) -> SqlValue {
+    match &expr[root] {
+        SqlLang::Symbol(k) => eval_symbol(*k, symbols, assignment),
+
+        //  Boolean: three-valued logic
+        SqlLang::And([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            three_valued_and(lv, rv)
+        }
+        SqlLang::Or([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            three_valued_or(lv, rv)
+        }
+        SqlLang::Not([c]) => {
+            let cv = eval(expr, *c, symbols, assignment);
+            three_valued_not(cv)
+        }
+
+        //  Comparisons: NULL if either side is NULL
+        SqlLang::Eq([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            if lv.is_null() || rv.is_null() {
+                SqlValue::Null
+            } else {
+                SqlValue::Bool(lv == rv)
+            }
+        }
+        SqlLang::NotEq([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            if lv.is_null() || rv.is_null() {
+                SqlValue::Null
+            } else {
+                SqlValue::Bool(lv != rv)
+            }
+        }
+        SqlLang::Lt([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            SqlValue::Bool(lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Less))
+        }
+        SqlLang::Gt([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            SqlValue::Bool(lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Greater))
+        }
+        SqlLang::LtEq([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            let c = lv.partial_cmp(&rv);
+            SqlValue::Bool(
+                c == Some(std::cmp::Ordering::Less) || c == Some(std::cmp::Ordering::Equal),
+            )
+        }
+        SqlLang::GtEq([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            let c = lv.partial_cmp(&rv);
+            SqlValue::Bool(
+                c == Some(std::cmp::Ordering::Greater) || c == Some(std::cmp::Ordering::Equal),
+            )
+        }
+
+        //  Arithmetic: NULL if any operand is NULL
+        SqlLang::Add([l, r]) => arith2(expr, *l, *r, symbols, assignment, |a, b| a + b),
+        SqlLang::Sub([l, r]) => arith2(expr, *l, *r, symbols, assignment, |a, b| a - b),
+        SqlLang::Mul([l, r]) => arith2(expr, *l, *r, symbols, assignment, |a, b| a * b),
+        SqlLang::Div([l, r]) => arith2(expr, *l, *r, symbols, assignment, |a, b| {
+            if b == 0 {
+                std::i64::MAX
+            } else {
+                a / b
+            }
+        }),
+        SqlLang::Neg([c]) => {
+            let cv = eval(expr, *c, symbols, assignment);
+            match sqlvalue_to_int(&cv) {
+                Some(i) => SqlValue::Int(-i),
+                None => SqlValue::Null,
+            }
+        }
+
+        //  Bitwise NOT: ~i ?invert all bits
+        SqlLang::BitNot([c]) => {
+            let cv = eval(expr, *c, symbols, assignment);
+            match sqlvalue_to_int(&cv) {
+                Some(i) => SqlValue::Int(!i),
+                None => SqlValue::Null,
+            }
+        }
+
+        //  String concatenation: NULL if either operand is NULL
+        SqlLang::Concat([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            if lv.is_null() || rv.is_null() {
+                SqlValue::Null
+            } else {
+                SqlValue::Text(format!(
+                    "{}{}",
+                    sqlvalue_to_text(&lv),
+                    sqlvalue_to_text(&rv)
+                ))
+            }
+        }
+
+        //  Bitwise AND/OR: both operands must be integers, NULL propagation
+        SqlLang::BitAnd([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            match (sqlvalue_to_int(&lv), sqlvalue_to_int(&rv)) {
+                (Some(a), Some(b)) => SqlValue::Int(a & b),
+                _ => SqlValue::Null,
+            }
+        }
+        SqlLang::BitOr([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            match (sqlvalue_to_int(&lv), sqlvalue_to_int(&rv)) {
+                (Some(a), Some(b)) => SqlValue::Int(a | b),
+                _ => SqlValue::Null,
+            }
+        }
+
+        //  Remainder: both operands must be integers, NULL if RHS is 0
+        SqlLang::Remainder([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            match (sqlvalue_to_int(&lv), sqlvalue_to_int(&rv)) {
+                (Some(a), Some(b)) if b != 0 => SqlValue::Int(a % b),
+                _ => SqlValue::Null,
+            }
+        }
+
+        //  BETWEEN: e >= lo AND e <= hi (with NULL propagation)
+        SqlLang::Between([e, lo, hi]) => {
+            let ev = eval(expr, *e, symbols, assignment);
+            let lov = eval(expr, *lo, symbols, assignment);
+            let hiv = eval(expr, *hi, symbols, assignment);
+            if ev.is_null() || lov.is_null() || hiv.is_null() {
+                SqlValue::Null
+            } else {
+                let ge = ev.partial_cmp(&lov);
+                let le = ev.partial_cmp(&hiv);
+                SqlValue::Bool(
+                    (ge == Some(std::cmp::Ordering::Greater)
+                        || ge == Some(std::cmp::Ordering::Equal))
+                        && (le == Some(std::cmp::Ordering::Less)
+                            || le == Some(std::cmp::Ordering::Equal)),
+                )
+            }
+        }
+
+        //  IS NULL / IS NOT NULL
+        SqlLang::IsNull([c]) => SqlValue::Bool(eval(expr, *c, symbols, assignment).is_null()),
+        SqlLang::IsNotNull([c]) => SqlValue::Bool(!eval(expr, *c, symbols, assignment).is_null()),
+
+        //  IS FALSE: true only when value IS the boolean FALSE
+        SqlLang::IsFalse([c]) => SqlValue::Bool(matches!(
+            truth_value(&eval(expr, *c, symbols, assignment)),
+            SqlValue::Bool(false)
+        )),
+        //  IS TRUE: true only when value IS the boolean TRUE
+        SqlLang::IsTrue([c]) => SqlValue::Bool(matches!(
+            truth_value(&eval(expr, *c, symbols, assignment)),
+            SqlValue::Bool(true)
+        )),
+        //  IS NOT FALSE: true when value is NOT the boolean FALSE (includes NULL)
+        SqlLang::IsNotFalse([c]) => SqlValue::Bool(!matches!(
+            truth_value(&eval(expr, *c, symbols, assignment)),
+            SqlValue::Bool(false)
+        )),
+        //  IS NOT TRUE: true when value is NOT the boolean TRUE (includes NULL)
+        SqlLang::IsNotTrue([c]) => SqlValue::Bool(!matches!(
+            truth_value(&eval(expr, *c, symbols, assignment)),
+            SqlValue::Bool(true)
+        )),
+        //  IS UNKNOWN: same as IS NULL
+        SqlLang::IsUnknown([c]) => SqlValue::Bool(eval(expr, *c, symbols, assignment).is_null()),
+        //  IS NOT UNKNOWN: same as IS NOT NULL
+        SqlLang::IsNotUnknown([c]) => {
+            SqlValue::Bool(!eval(expr, *c, symbols, assignment).is_null())
+        }
+    }
+}
+
+/// Convert any SqlValue to an SQL truth value: TRUE, FALSE, or NULL.
+/// In SQLite: 0 and '' are falsy; NULL is NULL; everything else is TRUE.
+fn truth_value(v: &SqlValue) -> SqlValue {
+    match v {
+        SqlValue::Null => SqlValue::Null,
+        SqlValue::Bool(b) => SqlValue::Bool(*b),
+        SqlValue::Int(0) => SqlValue::Bool(false),
+        SqlValue::Int(_) => SqlValue::Bool(true),
+        SqlValue::Text(s) if s == "0" || s.is_empty() => SqlValue::Bool(false),
+        SqlValue::Text(_) => SqlValue::Bool(true),
+        SqlValue::Blob => SqlValue::Bool(true),
+    }
+}
+
+/// Three-valued AND:  FALSE wins, NULL otherwise, TRUE only if both TRUE.
+fn three_valued_and(l: SqlValue, r: SqlValue) -> SqlValue {
+    match (truth_value(&l), truth_value(&r)) {
+        (SqlValue::Bool(false), _) | (_, SqlValue::Bool(false)) => SqlValue::Bool(false),
+        (SqlValue::Null, _) | (_, SqlValue::Null) => SqlValue::Null,
+        (SqlValue::Bool(true), SqlValue::Bool(true)) => SqlValue::Bool(true),
+        _ => unreachable!(), // truth_value only returns Null/Bool
+    }
+}
+
+/// Three-valued OR: TRUE wins, NULL otherwise, FALSE only if both FALSE.
+fn three_valued_or(l: SqlValue, r: SqlValue) -> SqlValue {
+    match (truth_value(&l), truth_value(&r)) {
+        (SqlValue::Bool(true), _) | (_, SqlValue::Bool(true)) => SqlValue::Bool(true),
+        (SqlValue::Null, _) | (_, SqlValue::Null) => SqlValue::Null,
+        (SqlValue::Bool(false), SqlValue::Bool(false)) => SqlValue::Bool(false),
+        _ => unreachable!(),
+    }
+}
+
+/// Three-valued NOT:  NOT NULL = NULL, NOT TRUE = FALSE, NOT FALSE = TRUE.
+fn three_valued_not(v: SqlValue) -> SqlValue {
+    match truth_value(&v) {
+        SqlValue::Null => SqlValue::Null,
+        SqlValue::Bool(b) => SqlValue::Bool(!b),
+        _ => unreachable!(),
+    }
+}
+
+/// Binary arithmetic on integers.  Bool converts to Int(0/1).  Returns Null if
+/// either operand is Null or non-numeric.
+fn arith2<F>(
+    expr: &RecExpr<SqlLang>,
+    l: Id,
+    r: Id,
+    symbols: &SymbolTable,
+    assignment: &HashMap<u64, SqlValue>,
+    f: F,
+) -> SqlValue
+where
+    F: FnOnce(i64, i64) -> i64,
+{
+    let lv = eval(expr, l, symbols, assignment);
+    let rv = eval(expr, r, symbols, assignment);
+    let li = sqlvalue_to_int(&lv);
+    let ri = sqlvalue_to_int(&rv);
+    match (li, ri) {
+        (Some(a), Some(b)) => SqlValue::Int(f(a, b)),
+        _ => SqlValue::Null,
+    }
+}
+
+/// Convert a SqlValue to a text representation.  Bool ?"0"/"1".
+fn sqlvalue_to_text(v: &SqlValue) -> String {
+    match v {
+        SqlValue::Int(i) => i.to_string(),
+        SqlValue::Bool(true) => "1".to_string(),
+        SqlValue::Bool(false) => "0".to_string(),
+        SqlValue::Text(t) => t.clone(),
+        SqlValue::Null => String::new(),
+        SqlValue::Blob => String::new(),
+    }
+}
+
+/// Convert a SqlValue to i64 if possible.  Bool ?0/1.  Text ?try parse.
+fn sqlvalue_to_int(v: &SqlValue) -> Option<i64> {
+    match v {
+        SqlValue::Int(i) => Some(*i),
+        SqlValue::Bool(true) => Some(1),
+        SqlValue::Bool(false) => Some(0),
+        SqlValue::Text(t) => t.parse::<i64>().ok(),
+        SqlValue::Null | SqlValue::Blob => None,
+    }
+}
+
+/// Resolve a Symbol: prefer literal value from the symbol table, fall back to
+/// the random assignment.
+fn eval_symbol(key: u64, symbols: &SymbolTable, assignment: &HashMap<u64, SqlValue>) -> SqlValue {
+    if let Some(sql_expr) = symbols.get(&key) {
+        match sql_expr {
+            SqlExpr::Value(v) => {
+                return sqlparser_value_to_sqlvalue(v);
+            }
+            _ => {}
+        }
+    }
+    assignment.get(&key).cloned().unwrap_or(SqlValue::Null)
+}
+
+fn sqlparser_value_to_sqlvalue(v: &sqlparser::ast::Value) -> SqlValue {
+    match v {
+        sqlparser::ast::Value::Number(s, _) => {
+            if let Ok(i) = s.parse::<i64>() {
+                SqlValue::Int(i)
+            } else {
+                SqlValue::Text(s.clone())
+            }
+        }
+        sqlparser::ast::Value::SingleQuotedString(s)
+        | sqlparser::ast::Value::DoubleQuotedString(s)
+        | sqlparser::ast::Value::NationalStringLiteral(s) => SqlValue::Text(s.clone()),
+        // Hex literals ?BLOBs in SQLite (sort after numbers and text)
+        sqlparser::ast::Value::HexStringLiteral(_) => SqlValue::Blob,
+        sqlparser::ast::Value::Null => SqlValue::Null,
+        sqlparser::ast::Value::Boolean(b) => SqlValue::Bool(*b),
+        _ => SqlValue::Null,
+    }
+}
+
+/// Edge-case integers that stress boundary conditions.
+const EDGE_VALUES: &[i64] = &[
+    0,
+    1,
+    -1,
+    i64::MAX,
+    i64::MIN,
+    2i64.pow(31) - 1,
+    -(2i64.pow(31)), // 32-bit boundaries
+    255,
+    256,
+    65535,
+    65536, // byte / word boundaries
+];
+
+/// Classify what kind of random value a Symbol should receive, based on its
+/// entry in the SymbolTable (the original SqlExpr).
+///
+/// Returns `Some(pool)` for boolean-valued opaque expressions (they should
+/// only get Bool/Null assignments).  Returns `None` for column references
+/// and regular value expressions (random assignment handles those).
+fn classify_symbol(expr: &SqlExpr) -> Option<Vec<SqlValue>> {
+    match expr {
+        // Column references ?varied random values, handled by random_assignment
+        SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => None,
+
+        // Literals ?handled by eval_symbol from SymbolTable
+        SqlExpr::Value(_) => None,
+
+        // Boolean-valued opaque expressions (IN, EXISTS, subqueries, LIKE-alikes)
+        // ?should only receive Bool/Null values.
+        // In strict EGRAPH mode these rarely appear, but handle defensively.
+        SqlExpr::InList { .. }
+        | SqlExpr::InSubquery { .. }
+        | SqlExpr::Exists { .. }
+        | SqlExpr::Subquery(_) => Some(vec![
+            SqlValue::Bool(false),
+            SqlValue::Bool(true),
+            SqlValue::Null,
+        ]),
+
+        // Opaque BinaryOp ?could be boolean (LIKE) or value (||, &, <<).
+        // Conservative: treat as value (None), random_assignment handles it.
+        SqlExpr::BinaryOp { .. } => None,
+
+        // Other opaque expressions ?treat as value
+        _ => None,
+    }
+}
+
+/// Build a random assignment for every Symbol that appears in either tree.
+/// Uses the SymbolTable to guide value types:
+///   - Literals always use the literal value
+///   - Boolean opaque expressions get Bool values
+///   - Column references get varied random Int / Text / Null
+fn random_assignment<R: rand::Rng>(
+    symbol_ids: &HashSet<u64>,
+    symbols: &SymbolTable,
+    rng: &mut R,
+) -> HashMap<u64, SqlValue> {
+    let mut map = HashMap::new();
+    let edge_count = EDGE_VALUES.len() as i64;
+
+    for &sym in symbol_ids {
+        // Check whether this symbol has a fixed type pool
+        let typed_pool: Option<&[SqlValue]> = symbols
+            .get(&sym)
+            .and_then(|e| classify_symbol(e))
+            .map(|v| Box::leak(v.into_boxed_slice()) as &[SqlValue]); // leak is fine ?tiny, process-lived
+
+        if let Some(pool) = typed_pool {
+            // Pick from the typed pool
+            let idx = rng.gen_range(0..pool.len());
+            map.insert(sym, pool[idx].clone());
+        } else {
+            // Check if it's a literal
+            if let Some(sql_expr) = symbols.get(&sym) {
+                if let SqlExpr::Value(_) = sql_expr {
+                    // Literal ?will be handled by eval_symbol, skip assignment
+                    continue;
+                }
+            }
+            // Column reference or opaque value expression ?random value
+            let roll = rng.gen::<f64>();
+            if roll < NULL_PROB {
+                map.insert(sym, SqlValue::Null);
+            } else if roll < NULL_PROB + 0.15 {
+                // 15%: edge case integer
+                let idx = rng.gen_range(0..edge_count) as usize;
+                map.insert(sym, SqlValue::Int(EDGE_VALUES[idx]));
+            } else if roll < NULL_PROB + 0.25 {
+                // 10%: short random text
+                let len = rng.gen_range(1..=6);
+                let s: String = (0..len)
+                    .map(|_| rng.gen_range(b'a'..=b'z') as char)
+                    .collect();
+                map.insert(sym, SqlValue::Text(s));
+            } else {
+                // 63%: regular random int
+                map.insert(sym, SqlValue::Int(rng.gen_range(-100..=100)));
+            }
+        }
+    }
+    map
+}
+
+/// Collect all Symbol ids used in a RecExpr.
+fn collect_symbols(expr: &RecExpr<SqlLang>, root: Id, set: &mut HashSet<u64>) {
+    match &expr[root] {
+        SqlLang::Symbol(k) => {
+            set.insert(*k);
+        }
+        _ => {
+            for child in expr[root].children() {
+                collect_symbols(expr, *child, set);
+            }
+        }
+    }
+}
+
+/// Validate that `variant` produces the same result as `original` across
+/// NUM_SAMPLES random assignments.
+fn validate_variant(
+    original: &RecExpr<SqlLang>,
+    variant: &RecExpr<SqlLang>,
+    symbols: &SymbolTable,
+) -> bool {
+    let orig_root = Id::from(original.as_ref().len() - 1);
+    let var_root = Id::from(variant.as_ref().len() - 1);
+
+    let mut symbol_set = HashSet::new();
+    collect_symbols(original, orig_root, &mut symbol_set);
+    collect_symbols(variant, var_root, &mut symbol_set);
+
+    let mut rng = rand::thread_rng();
+
+    for _ in 0..NUM_SAMPLES {
+        let assignment = random_assignment(&symbol_set, symbols, &mut rng);
+        let orig_r = eval(original, orig_root, symbols, &assignment);
+        let var_r = eval(variant, var_root, symbols, &assignment);
+        if orig_r != var_r {
+            // eprintln!("[VALIDATE] FAIL: orig={:?} var={:?} at sample {}", orig_r, var_r, sample_num);
+            return false;
+        }
+    }
+    true
+}
+
+//  SQLite-backed Validation
+//
+// Instead of relying solely on the in-memory evaluator (which has subtle
+// semantic differences from real SQLite), we run both expressions through
+// an actual in-memory SQLite database.  This eliminates ALL false positives
+// caused by the evaluator / serialization gap ?no more whack-a-mole.
+//
+// For each variant we:
+//   1. Collect column identifiers from both expression ASTs
+//   2. Create an in-memory SQLite table with those columns
+//   3. Batch-insert N random test rows
+//   4. Run: SELECT SUM((orig) IS NOT (var)) FROM table
+//      ?0 means equivalent for every row (IS NOT is NULL-safe)
+//   5. If sum > 0 the variant is NOT equivalent ?discard
+//
+// Returns Option<bool>:
+//   Some(true)  ?equivalent
+//   Some(false) ?NOT equivalent
+//   None        ?SQLite setup failed (caller should fall back to in-memory eval)
+
+const SQLITE_SAMPLES: usize = 500;
+
+/// Edge-case values that are always included in every validation table to
+/// catch e-graph compositional mismatches (e.g. NOT(IsFalse(NOT(x))) vs
+/// NOT(IsFalse(x)) ?these differ for all non-null values, but random
+/// sampling might miss the critical NULL vs. non-NULL contrast).
+const FORCED_VALUES: &[&str] = &["NULL", "0", "1", "-1", "NULL", "0", "1"];
+
+/// Walk a SqlExpr tree recursively and collect every column identifier
+/// (both qualified, e.g. `t0.c0`, and unqualified, e.g. `c0`).
+fn collect_sql_identifiers(expr: &SqlExpr, ids: &mut HashSet<String>) {
+    match expr {
+        SqlExpr::Identifier(id) => {
+            ids.insert(id.value.clone());
+        }
+        SqlExpr::CompoundIdentifier(parts) => {
+            ids.insert(
+                parts
+                    .iter()
+                    .map(|i| i.value.clone())
+                    .collect::<Vec<_>>()
+                    .join("."),
+            );
+        }
+        SqlExpr::BinaryOp { left, right, .. } => {
+            collect_sql_identifiers(left, ids);
+            collect_sql_identifiers(right, ids);
+        }
+        SqlExpr::UnaryOp { expr: inner, .. } => {
+            collect_sql_identifiers(inner, ids);
+        }
+        SqlExpr::Between {
+            expr: inner,
+            low,
+            high,
+            ..
+        } => {
+            collect_sql_identifiers(inner, ids);
+            collect_sql_identifiers(low, ids);
+            collect_sql_identifiers(high, ids);
+        }
+        SqlExpr::IsNull(inner)
+        | SqlExpr::IsNotNull(inner)
+        | SqlExpr::IsFalse(inner)
+        | SqlExpr::IsTrue(inner)
+        | SqlExpr::IsNotFalse(inner)
+        | SqlExpr::IsNotTrue(inner)
+        | SqlExpr::IsUnknown(inner)
+        | SqlExpr::IsNotUnknown(inner) => {
+            collect_sql_identifiers(inner, ids);
+        }
+        SqlExpr::Nested(inner) => {
+            collect_sql_identifiers(inner, ids);
+        }
+        SqlExpr::InList {
+            expr: inner, list, ..
+        } => {
+            collect_sql_identifiers(inner, ids);
+            for item in list {
+                collect_sql_identifiers(item, ids);
+            }
+        }
+        // Function calls: in EGRAPH mode these are excluded from generation,
+        // but handle defensively.  We skip recursing into function arguments
+        // (the variant api differs across sqlparser versions).  If columns
+        // inside function bodies are missed, the SQLite validation returns
+        // None and the caller falls back to the in-memory evaluator.
+        //
+        // Literals, subqueries, wildcards, etc. ?stop recursing
+        _ => {}
+    }
+}
+
+/// Validate that `variant_expr` is semantically equivalent to `original_where`
+/// by evaluating both against random data rows inside a real SQLite database.
+fn validate_with_sqlite(
+    original_where: &SqlExpr,
+    variant_expr: &SqlExpr,
+    source_sql: &str,
+    num_samples: usize,
+) -> Option<bool> {
+    // 1. Collect column identifiers from both expression trees
+    let mut id_set = HashSet::new();
+    collect_sql_identifiers(original_where, &mut id_set);
+    collect_sql_identifiers(variant_expr, &mut id_set);
+
+    if id_set.is_empty() {
+        // No columns ?expressions are constant, trivially equivalent
+        return Some(true);
+    }
+
+    // 2. Group identifiers ?(table_name, columns)
+    let mut table_name: Option<String> = None;
+    let mut columns: HashSet<String> = HashSet::new();
+
+    for id in &id_set {
+        if let Some(dot_pos) = id.find('.') {
+            let tbl = id[..dot_pos].to_string();
+            let col = id[dot_pos + 1..].to_string();
+            match &table_name {
+                Some(existing) if *existing != tbl => {
+                    // Multiple distinct table names ?can't model, fall back
+                    return None;
+                }
+                _ => {
+                    table_name = Some(tbl);
+                }
+            }
+            columns.insert(col);
+        } else {
+            columns.insert(id.clone());
+        }
+    }
+
+    let table_name = table_name.unwrap_or_else(|| "t".to_string());
+
+    // 3. Sort columns for deterministic output (aids debugging)
+    let cols_sorted: Vec<&String> = {
+        let mut v: Vec<&String> = columns.iter().collect();
+        v.sort();
+        v
+    };
+
+    // 4. Open in-memory SQLite database
+    let conn = match Connection::open_in_memory() {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+
+    // 5. Create test table with the collected columns
+    let col_defs = cols_sorted
+        .iter()
+        .map(|c| format!("\"{}\"", c))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if conn
+        .execute(
+            &format!("CREATE TABLE \"{}\" ({})", table_name, col_defs),
+            [],
+        )
+        .is_err()
+    {
+        return None;
+    }
+
+    // 6. Batch-insert random test rows + forced edge-case rows
+    let mut rng = rand::thread_rng();
+    let mut insert_values: Vec<String> = Vec::with_capacity(num_samples + FORCED_VALUES.len());
+
+    for _ in 0..num_samples {
+        let vals: Vec<String> = cols_sorted
+            .iter()
+            .map(|_| random_sql_literal(&mut rng))
+            .collect();
+        insert_values.push(format!("({})", vals.join(", ")));
+    }
+
+    // Force edge-case rows so compositional mismatches (e.g. IsFalse + Not)
+    // are always caught regardless of random sampling luck.
+    for &forced in FORCED_VALUES {
+        let vals = cols_sorted
+            .iter()
+            .map(|_| forced.to_string())
+            .collect::<Vec<_>>();
+        insert_values.push(format!("({})", vals.join(", ")));
+    }
+
+    let col_names = cols_sorted
+        .iter()
+        .map(|c| format!("\"{}\"", c))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let insert_sql = format!(
+        "INSERT INTO \"{}\" ({}) VALUES {}",
+        table_name,
+        col_names,
+        insert_values.join(", ")
+    );
+    if conn.execute(&insert_sql, []).is_err() {
+        return None;
+    }
+
+    // 7. Compare all rows in a single query. IS NOT is NULL-safe:
+    //    NULL IS NOT NULL is 0, so equal NULL results compare as equal.
+    let orig_sql = format!("{}", fix_hex_format(original_where.clone(), source_sql));
+    let var_sql = format!("{}", variant_expr);
+
+    let compare_sql = format!(
+        "SELECT SUM(({}) IS NOT ({})) FROM \"{}\"",
+        orig_sql, var_sql, table_name
+    );
+
+    match conn.query_row(&compare_sql, [], |row| row.get::<_, i64>(0)) {
+        Ok(0) => Some(true),  // all rows matched ?equivalent
+        Ok(_) => Some(false), // at least one row differed ?NOT equivalent
+        Err(_) => None,       // SQL error ?can't validate, fall back
+    }
+}
+
+/// Generate a random SQL literal string for test-data insertion.
+fn random_sql_literal(rng: &mut impl rand::Rng) -> String {
+    let roll = rng.gen::<f64>();
+    if roll < NULL_PROB {
+        "NULL".to_string()
+    } else if roll < NULL_PROB + 0.08 {
+        // Edge-case integers
+        let idx = rng.gen_range(0..EDGE_VALUES.len());
+        format!("{}", EDGE_VALUES[idx])
+    } else if roll < NULL_PROB + 0.18 {
+        // Short random text (safe ASCII, no escaping needed)
+        let len = rng.gen_range(1..=6);
+        let s: String = (0..len)
+            .map(|_| rng.gen_range(b'a'..=b'z') as char)
+            .collect();
+        format!("'{}'", s)
+    } else {
+        // Regular integer
+        format!("{}", rng.gen_range(-100..=100))
+    }
+}
+
+//  Main entry point
+
+pub fn generate_equivalent_where_clauses(
+    where_expr: &SqlExpr,
+    source_sql: &str,
+    max_variants: usize,
+    iter_limit: usize,
+) -> Result<Vec<SqlExpr>, String> {
+    let (recexpr, symbols) = sql_expr_to_recexpr(where_expr, source_sql);
+
+    let root = Id::from(recexpr.as_ref().len() - 1);
+    if matches!(recexpr[root], SqlLang::Symbol(_)) {
+        return Ok(Vec::new());
+    }
+
+    let (egraph, root) = perform_rewrites(&recexpr, iter_limit);
+
+    // Extract more variants than needed ?validation will filter some out.
+    let variants = extract_variants(&egraph, root, max_variants * 5);
+
+    let original_str = format!("{}", fix_hex_format(where_expr.clone(), source_sql));
+    let mut results: Vec<SqlExpr> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    seen.insert(original_str);
+
+    for v in &variants {
+        if results.len() >= max_variants {
+            break;
+        }
+
+        let var_root = Id::from(v.as_ref().len() - 1);
+        if matches!(v[var_root], SqlLang::Symbol(_)) {
+            continue;
+        }
+
+        let sql_expr = recexpr_to_sql_expr(v, &symbols);
+
+        // Two-tier validation: SQLite-backed (authoritative) ?in-memory (fallback)
+        let var_key = format!("{}", sql_expr);
+        let var_label = if var_key.len() > 120 {
+            format!("{}...", &var_key[..120])
+        } else {
+            var_key.clone()
+        };
+
+        match validate_with_sqlite(where_expr, &sql_expr, source_sql, SQLITE_SAMPLES) {
+            Some(false) => {
+                validate_log!(
+                    "[VALIDATE] SQLite REJECT #{}.{} - discarded: {}",
+                    results.len() + 1,
+                    variants.len(),
+                    var_label
+                );
+                continue;
+            }
+            Some(true) => {
+                validate_log!(
+                    "[VALIDATE] SQLite PASS #{}.{}: {}",
+                    results.len() + 1,
+                    variants.len(),
+                    var_label
+                );
+            }
+            None => {
+                validate_log!(
+                    "[VALIDATE] SQLite FAILED #{}.{} - fallback to in-memory: {}",
+                    results.len() + 1,
+                    variants.len(),
+                    var_label
+                );
+                if !validate_variant(&recexpr, v, &symbols) {
+                    validate_log!(
+                        "[VALIDATE] In-memory REJECT #{}.{} - discarded: {}",
+                        results.len() + 1,
+                        variants.len(),
+                        var_label
+                    );
+                    continue;
+                }
+                validate_log!(
+                    "[VALIDATE] In-memory PASS #{}.{}: {}",
+                    results.len() + 1,
+                    variants.len(),
+                    var_label
+                );
+            }
+        }
+
+        let key = format!("{}", sql_expr);
+        if seen.insert(key) {
+            results.push(sql_expr);
+        }
+    }
+
+    Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn three_valued_and_false_wins_over_null() {
+        assert_eq!(
+            three_valued_and(SqlValue::Bool(false), SqlValue::Null),
+            SqlValue::Bool(false)
+        );
+        assert_eq!(
+            three_valued_and(SqlValue::Null, SqlValue::Bool(false)),
+            SqlValue::Bool(false)
+        );
+    }
+
+    #[test]
+    fn three_valued_or_true_wins_over_null() {
+        assert_eq!(
+            three_valued_or(SqlValue::Bool(true), SqlValue::Null),
+            SqlValue::Bool(true)
+        );
+        assert_eq!(
+            three_valued_or(SqlValue::Null, SqlValue::Bool(true)),
+            SqlValue::Bool(true)
+        );
+    }
+}
