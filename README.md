@@ -3,6 +3,16 @@
 
 ![SQLancer](media/logo/png/sqlancer_logo_logo_pos_500.png)
 
+---
+
+> **这个 fork 新增了 EGRAPH oracle** —— 用 e-graph 等价重写做 SQLite 的变形测试，
+> 外加一整套覆盖率驱动的研究工具链。
+> 用法、架构和踩过的坑见 **[EGRAPH.md](EGRAPH.md)**。
+>
+> 上游 SQLancer 的说明在下面，未作改动。
+
+---
+
 SQLancer is a tool to automatically test Database Management Systems (DBMSs) in order to find bugs in their implementation. That is, it finds bugs in the code of the DBMS implementation, rather than in queries written by the user. SQLancer has found hundreds of bugs in mature and widely-known DBMSs.
 
 SQLancer tackles two essential challenges when automatically testing the DBMSs:
