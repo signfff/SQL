@@ -76,8 +76,10 @@ public final class Main {
         private File curFile;
         private File queryPlanFile;
         private File reduceFile;
+        private File replayFile;
         private FileWriter logFileWriter;
         public FileWriter currentFileWriter;
+        private FileWriter replayFileWriter;
         private FileWriter queryPlanFileWriter;
         private FileWriter reduceFileWriter;
         private Path reproduceFilePath;
@@ -118,6 +120,14 @@ public final class Main {
             logEachSelect = options.logEachSelect();
             if (logEachSelect) {
                 curFile = new File(dir, databaseName + "-cur.log");
+            }
+            String replayFilePath = System.getProperty("egraph.replay.file");
+            if (replayFilePath != null && !replayFilePath.trim().isEmpty()) {
+                replayFile = new File(replayFilePath);
+                File parent = replayFile.getParentFile();
+                if (parent != null && !parent.exists()) {
+                    parent.mkdirs();
+                }
             }
             logQueryPlan = options.logQueryPlan();
             if (logQueryPlan) {
@@ -189,6 +199,36 @@ public final class Main {
             return currentFileWriter;
         }
 
+        private FileWriter getReplayFileWriter() {
+            if (replayFile == null) {
+                return null;
+            }
+            if (replayFileWriter == null) {
+                try {
+                    replayFileWriter = new FileWriter(replayFile, true);
+                } catch (IOException e) {
+                    throw new AssertionError(e);
+                }
+            }
+            return replayFileWriter;
+        }
+
+        public void closeCurrentFileWriter() {
+            try {
+                if (currentFileWriter != null) {
+                    currentFileWriter.close();
+                }
+                if (replayFileWriter != null) {
+                    replayFileWriter.close();
+                }
+            } catch (IOException e) {
+                throw new AssertionError(e);
+            } finally {
+                currentFileWriter = null;
+                replayFileWriter = null;
+            }
+        }
+
         public FileWriter getQueryPlanFileWriter() {
             if (!logQueryPlan) {
                 throw new UnsupportedOperationException();
@@ -224,6 +264,11 @@ public final class Main {
             printState(getCurrentFileWriter(), state);
             try {
                 currentFileWriter.flush();
+                FileWriter replayWriter = shouldMirrorCurrentLogToReplayFile() ? getReplayFileWriter() : null;
+                if (replayWriter != null) {
+                    printState(replayWriter, state);
+                    replayWriter.flush();
+                }
 
             } catch (IOException e) {
                 e.printStackTrace();
@@ -243,9 +288,15 @@ public final class Main {
                 throw new UnsupportedOperationException();
             }
             try {
-                getCurrentFileWriter().write(loggable.getLogString());
+                String logString = loggable.getLogString();
+                getCurrentFileWriter().write(logString);
 
                 currentFileWriter.flush();
+                FileWriter replayWriter = shouldMirrorCurrentLogToReplayFile() ? getReplayFileWriter() : null;
+                if (replayWriter != null) {
+                    replayWriter.write(logString);
+                    replayWriter.flush();
+                }
             } catch (IOException e) {
                 throw new AssertionError();
             }
@@ -261,6 +312,10 @@ public final class Main {
             } catch (IOException e) {
                 throw new AssertionError();
             }
+        }
+
+        private boolean shouldMirrorCurrentLogToReplayFile() {
+            return Boolean.getBoolean("egraph.replay.mirrorCurrentLog");
         }
 
         public void logReducer(String reducerLog) {
@@ -467,12 +522,7 @@ public final class Main {
                 } else {
                     reproducer = provider.generateAndTestDatabase(state);
                 }
-                try {
-                    logger.getCurrentFileWriter().close();
-                    logger.currentFileWriter = null;
-                } catch (IOException e) {
-                    throw new AssertionError(e);
-                }
+                logger.closeCurrentFileWriter();
 
                 if (options.serializeReproduceState() && reproducer != null) {
                     stateToRepro.serialize(logger.getReproduceFilePath());
@@ -699,12 +749,9 @@ public final class Main {
                     } finally {
                         try {
                             if (options.logEachSelect()) {
-                                if (executor.getLogger().currentFileWriter != null) {
-                                    executor.getLogger().currentFileWriter.close();
-                                }
-                                executor.getLogger().currentFileWriter = null;
+                                executor.getLogger().closeCurrentFileWriter();
                             }
-                        } catch (IOException e) {
+                        } catch (AssertionError e) {
                             e.printStackTrace();
                         }
                     }
@@ -715,7 +762,13 @@ public final class Main {
             if (options.getTimeoutSeconds() == -1) {
                 execService.awaitTermination(Long.MAX_VALUE, TimeUnit.DAYS);
             } else {
-                execService.awaitTermination(options.getTimeoutSeconds(), TimeUnit.SECONDS);
+                boolean terminated = execService.awaitTermination(options.getTimeoutSeconds(), TimeUnit.SECONDS);
+                if (!terminated) {
+                    execService.shutdownNow();
+                    if (!execService.awaitTermination(10, TimeUnit.SECONDS)) {
+                        return options.getErrorExitCode();
+                    }
+                }
             }
         } catch (InterruptedException e) {
             e.printStackTrace();

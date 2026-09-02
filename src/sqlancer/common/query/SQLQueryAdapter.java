@@ -12,6 +12,7 @@ import sqlancer.SQLConnection;
 
 public class SQLQueryAdapter extends Query<SQLConnection> implements Serializable {
     private static final long serialVersionUID = 1L;
+    private static final int STATEMENT_TIMEOUT_SECONDS = Integer.getInteger("sqlancer.statementTimeoutSeconds", 0);
 
     private final String query;
     private final ExpectedErrors expectedErrors;
@@ -133,6 +134,7 @@ public class SQLQueryAdapter extends Query<SQLConnection> implements Serializabl
         } else {
             s = connection.createStatement();
         }
+        applyStatementTimeout(s);
         try {
             if (fills.length > 0) {
                 ((PreparedStatement) s).execute();
@@ -143,6 +145,9 @@ public class SQLQueryAdapter extends Query<SQLConnection> implements Serializabl
             return true;
         } catch (Exception e) {
             Main.nrUnsuccessfulActions.addAndGet(1);
+            if (isStatementTimeout(e)) {
+                return false;
+            }
             if (reportException) {
                 checkException(e);
             }
@@ -188,6 +193,7 @@ public class SQLQueryAdapter extends Query<SQLConnection> implements Serializabl
         } else {
             s = connection.createStatement();
         }
+        applyStatementTimeout(s);
         ResultSet result;
         try {
             if (fills.length > 0) {
@@ -203,11 +209,44 @@ public class SQLQueryAdapter extends Query<SQLConnection> implements Serializabl
         } catch (Exception e) {
             s.close();
             Main.nrUnsuccessfulActions.addAndGet(1);
+            if (isStatementTimeout(e)) {
+                return null;
+            }
             if (reportException) {
                 checkException(e);
             }
             return null;
         }
+    }
+
+    private static void applyStatementTimeout(Statement statement) {
+        if (STATEMENT_TIMEOUT_SECONDS <= 0) {
+            return;
+        }
+        try {
+            statement.setQueryTimeout(STATEMENT_TIMEOUT_SECONDS);
+        } catch (SQLException ignored) {
+        }
+    }
+
+    private static boolean isStatementTimeout(Exception e) {
+        if (STATEMENT_TIMEOUT_SECONDS <= 0) {
+            return false;
+        }
+        Throwable current = e;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null) {
+                String normalized = message.toLowerCase(java.util.Locale.ROOT);
+                if (normalized.contains("query timeout") || normalized.contains("query timed out")
+                        || normalized.contains("statement timeout") || normalized.contains("sqlite_interrupt")
+                        || normalized.contains("interrupted")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     @Override

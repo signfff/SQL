@@ -132,6 +132,18 @@ public class MainOptions {
     @Parameter(names = "--reduce-ast", description = "EXPERIMENTAL perform AST reduction after statement reduction")
     private boolean reduceAST = false; // NOPMD
 
+    @Parameter(names = "--egraph-url", description = "URL of the Rust-based e-graph SQL equivalence generator HTTP service")
+    private String egraphUrl; // NOPMD
+
+    @Parameter(names = "--egraph-max-variants", description = "Maximum number of equivalent SQL variants requested from the e-graph generator")
+    private int egraphMaxVariants = 3; // NOPMD
+
+    @Parameter(names = "--egraph-timeout-millis", description = "Timeout for the external e-graph generator in milliseconds")
+    private long egraphTimeoutMillis = 10000; // NOPMD
+
+    @Parameter(names = "--egraph-log-each-select", description = "Logs every EGRAPH SELECT statement issued", arity = 1)
+    private boolean egraphLogEachSelect; // NOPMD
+
     @Parameter(names = "--statement-reducer-max-steps", description = "EXPERIMENTAL Maximum steps the statement reducer will do")
     private long maxStatementReduceSteps = NO_REDUCE_LIMIT; // NOPMD
 
@@ -164,6 +176,10 @@ public class MainOptions {
 
     public boolean logEachSelect() {
         return logEachSelect;
+    }
+
+    public boolean egraphLogEachSelect() {
+        return egraphLogEachSelect;
     }
 
     public boolean printAllStatements() {
@@ -341,6 +357,18 @@ public class MainOptions {
 
     public boolean canonicalizeSqlString() {
         return canonicalizeSqlString;
+    }
+
+    public String getEGraphUrl() {
+        return egraphUrl;
+    }
+
+    public int getEGraphMaxVariants() {
+        return egraphMaxVariants;
+    }
+
+    public long getEGraphTimeoutMillis() {
+        return egraphTimeoutMillis;
     }
 
 }
