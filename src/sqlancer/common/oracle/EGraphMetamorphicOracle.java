@@ -1,0 +1,557 @@
+package sqlancer.common.oracle;
+
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.sql.SQLException;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.function.Function;
+
+import sqlancer.ComparatorHelper;
+import sqlancer.IgnoreMeException;
+import sqlancer.Reproducer;
+import sqlancer.SQLGlobalState;
+import sqlancer.common.query.ExpectedErrors;
+import sqlancer.common.query.SQLQueryAdapter;
+import sqlancer.common.query.SQLancerResultSet;
+import sqlancer.common.schema.AbstractTable;
+
+public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements TestOracle<G> {
+
+    public interface QueryGenerator<G extends SQLGlobalState<?, ?>> {
+        GeneratedQuery generate(G globalState) throws Exception;
+    }
+
+    public static final class GeneratedQuery {
+        private final String originalQuery;
+        private final String rewriteQuery;
+        private final Function<String, String> variantWrapper;
+        private final String source;
+
+        public GeneratedQuery(String originalQuery) {
+            this(originalQuery, originalQuery, Function.identity());
+        }
+
+        public GeneratedQuery(String originalQuery, String rewriteQuery, Function<String, String> variantWrapper) {
+            this(originalQuery, rewriteQuery, variantWrapper, "UNKNOWN");
+        }
+
+        public GeneratedQuery(String originalQuery, String rewriteQuery, Function<String, String> variantWrapper,
+                String source) {
+            this.originalQuery = originalQuery;
+            this.rewriteQuery = rewriteQuery;
+            this.variantWrapper = variantWrapper;
+            this.source = source;
+        }
+
+        String getOriginalQuery() {
+            return originalQuery;
+        }
+
+        String getRewriteQuery() {
+            return rewriteQuery;
+        }
+
+        String wrapVariant(String variantQuery) {
+            return variantWrapper.apply(variantQuery);
+        }
+
+        String getSource() {
+            return source;
+        }
+    }
+
+    private static final boolean MONITOR_ACTIVE = Boolean.getBoolean("egraph.monitor");
+    private static final Path SINGLE_SIDE_EMPTY_LOG = Path.of(System.getProperty("egraph.singleSideEmptyLog",
+            System.getProperty("egraph.variantOnlyEmptyLog", "egraph-single-side-empty-reproducers.sql")));
+    private static int checkCounter;
+
+    private final G state;
+    private final QueryGenerator<G> queryGenerator;
+    private final ExpectedErrors errors;
+    private final EGraphVariantGenerator variantGenerator;
+
+    private Reproducer<G> reproducer;
+    private String lastQueryString;
+
+    public EGraphMetamorphicOracle(G state, QueryGenerator<G> queryGenerator, ExpectedErrors errors,
+            EGraphVariantGenerator variantGenerator) {
+        if (state == null || queryGenerator == null || errors == null || variantGenerator == null) {
+            throw new IllegalArgumentException("Null variables used to initialize EGraphMetamorphicOracle.");
+        }
+        this.state = state;
+        this.queryGenerator = queryGenerator;
+        this.errors = errors;
+        this.variantGenerator = variantGenerator;
+    }
+
+    @Override
+    public void check() throws Exception {
+        long checkStartTime = System.currentTimeMillis();
+        int checkNum = ++checkCounter;
+        boolean show = MONITOR_ACTIVE && checkNum == 1;
+        boolean skipped = false;
+
+        try {
+            reproducer = null;
+            lastQueryString = null;
+
+            if (show) {
+                printSeparator('-', 64);
+                System.err.printf("  EGRAPH ORACLE CHECK #%d%n", checkNum);
+                printSeparator('-', 64);
+                printPhase(1, 5, "DATABASE STATE");
+                dumpDatabaseState();
+            }
+
+            long genStart = System.currentTimeMillis();
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " generate-query start");
+            GeneratedQuery generatedQuery = queryGenerator.generate(state);
+            long genTime = System.currentTimeMillis() - genStart;
+            if (generatedQuery == null) {
+                skipped = true;
+                throw new IgnoreMeException();
+            }
+            String originalQuery = generatedQuery.getOriginalQuery();
+            String rewriteQuery = generatedQuery.getRewriteQuery();
+            String querySource = generatedQuery.getSource();
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " generate-query done source="
+                    + querySource + " ms=" + genTime + " rewrite=" + formatQuery(rewriteQuery));
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordQuerySource(querySource);
+            if (originalQuery == null || originalQuery.isBlank()) {
+                skipped = true;
+                throw new IgnoreMeException();
+            }
+            if (rewriteQuery == null || rewriteQuery.isBlank()) {
+                rewriteQuery = originalQuery;
+            }
+            lastQueryString = originalQuery;
+
+            long origExecStart = System.currentTimeMillis();
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " original-exec start source="
+                    + querySource + " sql=" + formatQuery(originalQuery));
+            List<String> originalResult = getResultRows(originalQuery, errors, state);
+            long origExecTime = System.currentTimeMillis() - origExecStart;
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " original-exec done source="
+                    + querySource + " rows=" + originalResult.size() + " ms=" + origExecTime);
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordOriginalResult(querySource, originalQuery,
+                    originalResult.size());
+
+            if (show) {
+                printPhase(2, 5, "ORIGINAL QUERY GENERATION");
+                System.err.printf("  Generation time: %d ms%n", genTime);
+                System.err.printf("  Query:%n    %s%n", formatQuery(originalQuery));
+            }
+
+            if (show) {
+                printPhase(3, 5, "ORIGINAL QUERY EXECUTION");
+                printRows(originalResult, origExecTime);
+            }
+
+            long variantStart = System.currentTimeMillis();
+            List<String> variants;
+            try {
+                sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " egraph-request start source="
+                        + querySource + " rewrite=" + formatQuery(rewriteQuery));
+                variants = variantGenerator.generateVariants(rewriteQuery);
+            } catch (Exception e) {
+                if (isVariantGenerationUnavailable(e)) {
+                    skipped = true;
+                    throw new IgnoreMeException();
+                }
+                throw new AssertionError("EGRAPH variant generation failed: " + e, e);
+            }
+            long variantTime = System.currentTimeMillis() - variantStart;
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " egraph-request done source="
+                    + querySource + " variants=" + (variants == null ? 0 : variants.size()) + " ms=" + variantTime);
+
+            if (show) {
+                printPhase(4, 5, "EGRAPH VARIANT GENERATION");
+                System.err.printf("  Generated: %d variants in %d ms%n",
+                        variants == null ? 0 : variants.size(), variantTime);
+            }
+
+            if (variants == null || variants.isEmpty()) {
+                skipped = true;
+                throw new IgnoreMeException();
+            }
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordVariantCheck(querySource);
+
+            if (show) {
+                printPhase(5, 5, "VARIANT EXECUTION AND COMPARISON");
+                System.err.printf("  Reference: original query returned %d rows%n", originalResult.size());
+            }
+
+            boolean recordExample = sqlancer.sqlite3.oracle.EGraphExampleLogger.isEnabled();
+            List<String> exampleVariantQueries = recordExample ? new ArrayList<>() : null;
+            List<List<String>> exampleVariantResults = recordExample ? new ArrayList<>() : null;
+            int testedCount = 0;
+            int passedCount = 0;
+            boolean corpusCaseRecorded = false;
+            List<String> replayQueries = new ArrayList<>();
+            replayQueries.add(originalQuery);
+            for (int i = 0; i < variants.size(); i++) {
+                String variantQuery = generatedQuery.wrapVariant(variants.get(i));
+                if (variantQuery == null || variantQuery.isBlank() || variantQuery.equals(originalQuery)) {
+                    continue;
+                }
+
+                testedCount++;
+                long varExecStart = System.currentTimeMillis();
+                sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " variant-exec start source="
+                        + querySource + " variant#" + (i + 1) + " sql=" + formatQuery(variantQuery));
+                List<String> variantResult = getResultRows(variantQuery, errors, state);
+                long varExecTime = System.currentTimeMillis() - varExecStart;
+                sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " variant-exec done source="
+                        + querySource + " variant#" + (i + 1) + " rows=" + variantResult.size() + " ms="
+                        + varExecTime);
+                replayQueries.add(variantQuery);
+                sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordResultPair(querySource, originalQuery,
+                        originalResult.size(), variantQuery, variantResult.size());
+                if (recordExample) {
+                    exampleVariantQueries.add(variantQuery);
+                    exampleVariantResults.add(variantResult);
+                }
+                try {
+                    if (hasSingleSideEmptyMismatch(originalResult, variantResult)) {
+                        logSingleSideEmptyMismatch(state, querySource, rewriteQuery, originalQuery, variantQuery,
+                                originalResult, variantResult);
+                        throw new AssertionError(String.format(
+                                "EGRAPH single-side empty result mismatch! Original rows: %d, variant rows: %d.%nFirst query: \"%s\"%nSecond query: \"%s\"",
+                                originalResult.size(), variantResult.size(), originalQuery, variantQuery));
+                    }
+                    assumeRowsAreEqual(originalResult, variantResult, originalQuery, variantQuery, state);
+                    passedCount++;
+                    if (show) {
+                        System.err.printf("  [V%d] %3d rows  %3d ms  MATCH%n",
+                                i + 1, variantResult.size(), varExecTime);
+                    }
+                } catch (AssertionError e) {
+                    if (show) {
+                        System.err.printf("  [V%d] %3d rows  %3d ms  MISMATCH%n",
+                                i + 1, variantResult.size(), varExecTime);
+                        printMismatch(originalResult, variantResult);
+                    }
+                    reproducer = new EGraphReproducer<>(originalQuery, variantQuery, errors);
+                    state.getState().getLocalState()
+                            .log(String.format("Original query: %s%nVariant query: %s", originalQuery, variantQuery));
+                    if (!corpusCaseRecorded) {
+                        sqlancer.sqlite3.oracle.EGraphCorpusCaseWriter.recordCase(state, rewriteQuery,
+                                originalResult.size(), replayQueries);
+                        corpusCaseRecorded = true;
+                    }
+                    throw e;
+                }
+            }
+            if (!corpusCaseRecorded && testedCount > 0) {
+                sqlancer.sqlite3.oracle.EGraphCorpusCaseWriter.recordCase(state, rewriteQuery, originalResult.size(),
+                        replayQueries);
+                corpusCaseRecorded = true;
+            }
+            if (recordExample && !exampleVariantQueries.isEmpty()) {
+                sqlancer.sqlite3.oracle.EGraphExampleLogger.record(state, rewriteQuery, originalQuery, originalResult,
+                        exampleVariantQueries, exampleVariantResults, querySource);
+            }
+
+            if (show) {
+                long totalTime = System.currentTimeMillis() - checkStartTime;
+                System.err.printf("  SUMMARY: %d variants tested, %d passed, %d failed%n",
+                        testedCount, passedCount, testedCount - passedCount);
+                System.err.printf("  Total time: %d ms%n", totalTime);
+            }
+        } catch (IgnoreMeException e) {
+            skipped = true;
+            throw e;
+        } finally {
+            if (show && !skipped) {
+                System.err.println("[MONITOR] Complete check shown.");
+            }
+        }
+    }
+
+    private void dumpDatabaseState() {
+        try {
+            List<? extends AbstractTable<?, ?, ?>> tables = state.getSchema().getDatabaseTables();
+            if (tables.isEmpty()) {
+                System.err.println("  NO TABLES in database.");
+                return;
+            }
+
+            int emptyCount = 0;
+            for (AbstractTable<?, ?, ?> table : tables) {
+                long rowCount = -1;
+                try {
+                    SQLQueryAdapter q = new SQLQueryAdapter("SELECT COUNT(*) FROM \"" + table.getName() + "\"");
+                    try (SQLancerResultSet rs = q.executeAndGet(state)) {
+                        if (rs != null && rs.next()) {
+                            rowCount = rs.getLong(1);
+                        }
+                    }
+                } catch (Exception ignored) {
+                }
+                if (rowCount == 0) {
+                    emptyCount++;
+                }
+                System.err.printf("    - %s%s  [%s]%n", table.getName(), table.isView() ? " [VIEW]" : "",
+                        rowCount < 0 ? "unknown rows" : rowCount + " rows");
+            }
+            if (emptyCount > 0) {
+                System.err.println("  WARNING: Some tables are empty.");
+            }
+        } catch (Exception e) {
+            System.err.printf("  Could not read schema: %s%n", e.getMessage());
+        }
+    }
+
+    private static void printRows(List<String> rows, long executionTimeMillis) {
+        System.err.printf("  Result rows: %d  (execution: %d ms)%n", rows.size(), executionTimeMillis);
+        int limit = Math.min(rows.size(), 10);
+        for (int i = 0; i < limit; i++) {
+            System.err.printf("    row[%d] = %s%n", i, rows.get(i));
+        }
+        if (rows.size() > limit) {
+            System.err.printf("    ... (%d more rows)%n", rows.size() - limit);
+        }
+    }
+
+    private static void printMismatch(List<String> originalResult, List<String> variantResult) {
+        int maxShow = Math.min(10, Math.max(originalResult.size(), variantResult.size()));
+        for (int r = 0; r < maxShow; r++) {
+            String orig = r < originalResult.size() ? originalResult.get(r) : "<missing>";
+            String vari = r < variantResult.size() ? variantResult.get(r) : "<missing>";
+            String mark = orig.equals(vari) ? " " : "!";
+            System.err.printf("    row[%d] %s orig: %s%n", r, mark, orig);
+            System.err.printf("           %s var:  %s%n", mark, vari);
+        }
+    }
+
+    private static void printPhase(int num, int total, String title) {
+        System.err.printf("  [%d/%d] %s%n", num, total, title);
+        printSeparator('-', 64);
+    }
+
+    private static void printSeparator(char ch, int len) {
+        for (int i = 0; i < len; i++) {
+            System.err.print(ch);
+        }
+        System.err.println();
+    }
+
+    private static String formatQuery(String query) {
+        if (query == null) {
+            return "<null>";
+        }
+        if (query.length() > 200) {
+            return query.substring(0, 197) + "...";
+        }
+        return query;
+    }
+
+    private static List<String> getResultRows(String queryString, ExpectedErrors errors, SQLGlobalState<?, ?> state)
+            throws SQLException {
+        sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordExecution(queryString, state);
+        SQLQueryAdapter q = new SQLQueryAdapter(queryString, errors, true, state.getOptions().canonicalizeSqlString());
+        List<String> rows = new ArrayList<>();
+        SQLancerResultSet result = null;
+        try {
+            result = q.executeAndGet(state);
+            if (result == null) {
+                throw new IgnoreMeException();
+            }
+            if (state.getOptions().logEachSelect() && state.getOptions().egraphLogEachSelect()) {
+                state.getLogger().writeCurrent(queryString);
+            }
+            int columnCount = result.getColumnCount();
+            while (result.next()) {
+                StringBuilder row = new StringBuilder();
+                for (int i = 1; i <= columnCount; i++) {
+                    if (i > 1) {
+                        row.append('|');
+                    }
+                    row.append(encodeResultValue(result.getString(i)));
+                }
+                rows.add(row.toString());
+            }
+        } catch (Exception e) {
+            if (e instanceof IgnoreMeException) {
+                throw e;
+            }
+            if (e.getMessage() != null && errors.errorIsExpected(e.getMessage())) {
+                throw new IgnoreMeException();
+            }
+            throw new AssertionError(queryString, e);
+        } finally {
+            if (result != null && !result.isClosed()) {
+                result.close();
+            }
+        }
+        return rows;
+    }
+
+    private static void logSingleSideEmptyMismatch(SQLGlobalState<?, ?> state, String querySource, String rewriteQuery,
+            String originalQuery, String variantQuery, List<String> originalRows, List<String> variantRows) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("-- EGRAPH_SINGLE_SIDE_EMPTY_BEGIN\n");
+        sb.append("-- source: ").append(querySource == null ? "UNKNOWN" : querySource).append('\n');
+        sb.append("-- original_rows: ").append(originalRows.size()).append('\n');
+        sb.append("-- variant_rows: ").append(variantRows.size()).append('\n');
+        sb.append("-- base_query_sent_to_egraph:\n");
+        appendSql(sb, rewriteQuery);
+        sb.append("-- wrapped_original_query:\n");
+        appendSql(sb, originalQuery);
+        sb.append("-- wrapped_variant_query:\n");
+        appendSql(sb, variantQuery);
+        sb.append("-- original_row_sample:\n");
+        int originalLimit = Math.min(10, originalRows.size());
+        for (int i = 0; i < originalLimit; i++) {
+            sb.append("-- row[").append(i).append("] = ").append(originalRows.get(i)).append('\n');
+        }
+        if (originalRows.size() > originalLimit) {
+            sb.append("-- ... ").append(originalRows.size() - originalLimit).append(" more rows\n");
+        }
+        sb.append("-- variant_row_sample:\n");
+        int variantLimit = Math.min(10, variantRows.size());
+        for (int i = 0; i < variantLimit; i++) {
+            sb.append("-- row[").append(i).append("] = ").append(variantRows.get(i)).append('\n');
+        }
+        if (variantRows.size() > variantLimit) {
+            sb.append("-- ... ").append(variantRows.size() - variantLimit).append(" more rows\n");
+        }
+        sb.append("-- EGRAPH_SINGLE_SIDE_EMPTY_END\n\n");
+        state.getState().getLocalState().log(sb.toString());
+        try {
+            Files.writeString(SINGLE_SIDE_EMPTY_LOG, sb.toString(), StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException ignored) {
+        }
+    }
+
+    private static void appendSql(StringBuilder sb, String sql) {
+        sb.append(sql == null ? "" : sql.strip());
+        if (sb.length() == 0 || sb.charAt(sb.length() - 1) != ';') {
+            sb.append(';');
+        }
+        sb.append('\n');
+    }
+
+    private static boolean isVariantGenerationUnavailable(Throwable t) {
+        while (t != null) {
+            String className = t.getClass().getName();
+            String message = t.getMessage();
+            if ("java.net.ConnectException".equals(className) || "java.net.SocketTimeoutException".equals(className)) {
+                return true;
+            }
+            if (message != null && (message.contains("Connection refused") || message.contains("timed out")
+                    || message.contains("HTTP request failed"))) {
+                return true;
+            }
+            t = t.getCause();
+        }
+        return false;
+    }
+
+    static String encodeResultValue(String value) {
+        if (value == null) {
+            return "N";
+        }
+        String canonicalized = ComparatorHelper.canonicalizeResultValue(value.replaceAll("[\\.]0+$", ""));
+        return "S" + canonicalized.length() + ":" + canonicalized;
+    }
+
+    static void assumeRowsAreEqual(List<String> originalRows, List<String> variantRows,
+            String originalQueryString, String variantQueryString, SQLGlobalState<?, ?> state) {
+        if (originalRows.size() != variantRows.size()) {
+            logMismatch(originalRows, variantRows, originalQueryString, variantQueryString, state);
+            throw new AssertionError(String.format(
+                    "The size of the result sets mismatch (%d and %d)!%nFirst query: \"%s\"%nSecond query: \"%s\"",
+                    originalRows.size(), variantRows.size(), originalQueryString, variantQueryString));
+        }
+
+        if (!state.getOptions().validateResultSizeOnly()
+                && !resultRowsMatch(originalRows, variantRows, originalQueryString, variantQueryString)) {
+            logMismatch(originalRows, variantRows, originalQueryString, variantQueryString, state);
+            throw new AssertionError(String.format("The content of the result sets mismatch!%nFirst query: \"%s\"%n"
+                    + "Second query: \"%s\"", originalQueryString, variantQueryString));
+        }
+    }
+
+    static boolean hasSingleSideEmptyMismatch(List<String> originalRows, List<String> variantRows) {
+        return originalRows.isEmpty() != variantRows.isEmpty();
+    }
+
+    static boolean resultRowsMatch(List<String> originalRows, List<String> variantRows) {
+        return toMultiset(originalRows).equals(toMultiset(variantRows));
+    }
+
+    static boolean resultRowsMatch(List<String> originalRows, List<String> variantRows,
+            String originalQueryString, String variantQueryString) {
+        if (requiresOrderSensitiveComparison(originalQueryString)
+                || requiresOrderSensitiveComparison(variantQueryString)) {
+            return originalRows.equals(variantRows);
+        }
+        return resultRowsMatch(originalRows, variantRows);
+    }
+
+    static boolean requiresOrderSensitiveComparison(String queryString) {
+        return queryString != null && java.util.regex.Pattern.compile("(?is).*\\bORDER\\s+BY\\b.*")
+                .matcher(queryString).matches();
+    }
+
+    static Map<String, Integer> toMultiset(List<String> rows) {
+        Map<String, Integer> result = new HashMap<>();
+        for (String row : rows) {
+            result.merge(row, 1, Integer::sum);
+        }
+        return result;
+    }
+
+    private static void logMismatch(List<String> originalRows, List<String> variantRows,
+            String originalQueryString, String variantQueryString, SQLGlobalState<?, ?> state) {
+        state.getState().getLocalState().log(String.format("-- Query: \"%s\"; rows: %s%n"
+                + "-- Query: \"%s\"; rows: %s", originalQueryString, originalRows, variantQueryString, variantRows));
+    }
+
+    @Override
+    public String getLastQueryString() {
+        return lastQueryString;
+    }
+
+    @Override
+    public Reproducer<G> getLastReproducer() {
+        return reproducer;
+    }
+
+    private static final class EGraphReproducer<G extends SQLGlobalState<?, ?>> implements Reproducer<G> {
+
+        private final String originalQuery;
+        private final String variantQuery;
+        private final ExpectedErrors errors;
+
+        private EGraphReproducer(String originalQuery, String variantQuery, ExpectedErrors errors) {
+            this.originalQuery = originalQuery;
+            this.variantQuery = variantQuery;
+            this.errors = errors;
+        }
+
+        @Override
+        public boolean bugStillTriggers(G globalState) {
+            try {
+                List<String> originalResult = getResultRows(originalQuery, errors, globalState);
+                List<String> variantResult = getResultRows(variantQuery, errors, globalState);
+                try {
+                    assumeRowsAreEqual(originalResult, variantResult, originalQuery, variantQuery, globalState);
+                    return false;
+                } catch (AssertionError e) {
+                    return true;
+                }
+            } catch (Exception e) {
+                return false;
+            }
+        }
+    }
+}
