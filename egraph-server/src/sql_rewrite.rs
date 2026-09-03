@@ -928,6 +928,12 @@ fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         //  Boolean algebra ?De Morgan
         rewrite!("de-morgan-and"; "(not (and ?x ?y))" => "(or (not ?x) (not ?y))"),
         rewrite!("de-morgan-or"; "(not (or ?x ?y))" => "(and (not ?x) (not ?y))"),
+        // De Morgan in reverse.  Safe for the same reason the forward direction is:
+        // both sides have the same node count, so this is a pure shape change - it
+        // neither compresses (what makes idem/absorb produce spurious nodes) nor
+        // expands (what makes distributivity explode).
+        rewrite!("de-morgan-and-rev"; "(or (not ?x) (not ?y))" => "(not (and ?x ?y))"),
+        rewrite!("de-morgan-or-rev"; "(and (not ?x) (not ?y))" => "(not (or ?x ?y))"),
         //  Boolean algebra ?double negation
         rewrite!("double-neg"; "(not (not ?x))" => "?x"),
         //  Boolean algebra ?factoring (safe: always compresses)
@@ -961,12 +967,22 @@ fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         rewrite!("mul-comm"; "(* ?x ?y)" => "(* ?y ?x)"),
         rewrite!("add-assoc-l"; "(+ (+ ?x ?y) ?z)" => "(+ ?x (+ ?y ?z))"),
         rewrite!("add-assoc-r"; "(+ ?x (+ ?y ?z))" => "(+ (+ ?x ?y) ?z)"),
+        // Multiplication associativity, structurally the same as add-assoc above:
+        // both sides coerce every operand numerically, so the asymmetry that makes
+        // neg-neg and bitand-idem unsafe (one side coerces, the other does not)
+        // never arises.  Only mul-comm existed before.
+        rewrite!("mul-assoc-l"; "(* (* ?x ?y) ?z)" => "(* ?x (* ?y ?z))"),
+        rewrite!("mul-assoc-r"; "(* ?x (* ?y ?z))" => "(* (* ?x ?y) ?z)"),
         //  Arithmetic double-negation DISABLED ?negation forces numeric coercion
         // neg-neg: --x ?x is UNSAFE in SQLite ?- forces numeric coercion.
         // When x is TEXT, -(-('abc')) = 0 but bare 'abc' ?0.
         // rewrite!("neg-neg"; "(neg (neg ?x))" => "?x"),
         rewrite!("sub-to-add"; "(- ?x ?y)" => "(+ ?x (neg ?y))"),
         rewrite!("add-neg-to-sub"; "(+ ?x (neg ?y))" => "(- ?x ?y)"),
+        // x - y  ==  -(y - x).  Unlike neg-neg the negation is not cancelled here:
+        // both sides still apply subtraction to both operands, so the numeric
+        // coercion is identical and a TEXT operand behaves the same either way.
+        rewrite!("sub-antisym"; "(- ?x ?y)" => "(neg (- ?y ?x))"),
         //  IS FALSE / IS TRUE / IS UNKNOWN ?canonical form
         // IS FALSE / IS TRUE ?kept as transparent non-Symbol nodes.  The
         // obvious rewrites (IsFalseot, IsTrued) are correct as standalone
@@ -979,6 +995,11 @@ fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // safe to rewrite.
         rewrite!("isunknown-to-isnull"; "(isunknown ?x)" => "(isnull ?x)"),
         rewrite!("isnotunknown-to-isnotnull"; "(isnotunknown ?x)" => "(isnotnull ?x)"),
+        // Reverse direction.  The comment above already establishes that IS UNKNOWN
+        // and IS NULL are equivalent in every SQL context; this direction adds a
+        // spelling the generator never produces on its own.
+        rewrite!("isnull-to-isunknown"; "(isnull ?x)" => "(isunknown ?x)"),
+        rewrite!("isnotnull-to-isnotunknown"; "(isnotnull ?x)" => "(isnotunknown ?x)"),
         //  IS NULL / IS NOT NULL expansion ?DISABLED
         // These rules let egg's compositional extraction merge ISNULL/NOTNULL
         // e-classes with unrelated expressions (e.g. string literals), producing
