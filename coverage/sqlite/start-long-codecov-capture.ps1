@@ -1,6 +1,10 @@
-﻿param(
+param(
     [switch] $IncludeAutoResearchCorpus,
     [switch] $NoAutoResearchCorpus,
+    # Extra -D properties, e.g. -ExtraJavaProps '-Dsqlite3.egraph.deriveData=defaults'
+    [string[]] $ExtraJavaProps = @(),
+    # Suffix for the run directory so A/B runs are told apart at a glance
+    [string] $RunTag = "",
     # Wall-clock limit for the capture. -1 keeps the original behaviour of running
     # until Ctrl+C; a positive value makes the run unattended.
     [int] $TimeoutSeconds = -1
@@ -12,7 +16,8 @@ $ErrorActionPreference = "Stop"
 Set-Location "D:\sqlancer"
 
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$runDir = "D:\sqlancer\coverage\sqlite\manual-long-codecov-$stamp"
+$runSuffix = if ([string]::IsNullOrWhiteSpace($RunTag)) { "" } else { "-$RunTag" }
+$runDir = "D:\sqlancer\coverage\sqlite\manual-long-codecov-$stamp$runSuffix"
 New-Item -ItemType Directory -Force -Path $runDir | Out-Null
 
 $lastRunFile = "D:\sqlancer\coverage\sqlite\last-long-codecov-run.txt"
@@ -133,7 +138,9 @@ Write-Host "Stop it with Ctrl+C, then run:"
 Write-Host "powershell -ExecutionPolicy Bypass -File .\coverage\sqlite\finish-long-codecov.ps1 -ParallelWorkers 4"
 
 $javaExe = (Get-Command java.exe -ErrorAction Stop).Source
-$javaArgs = @(
+$javaArgs = @()
+foreach ($p in $ExtraJavaProps) { if (-not [string]::IsNullOrWhiteSpace($p)) { $javaArgs += $p } }
+$javaArgs += @(
     "--enable-native-access=ALL-UNNAMED",
     "-Dsqlancer.statementTimeoutSeconds=15",
     "-Degraph.coverage.file=$runDir\workload-hints.txt",
