@@ -16,7 +16,12 @@ param(
     [double] $Hours = 5,
     [int] $ParallelWorkers = 4,
     [switch] $SkipServerStart,
-    [switch] $SkipAutoResearch
+    [switch] $SkipAutoResearch,
+    # Passed straight through to start-long-codecov-capture.ps1, e.g.
+    #   -ExtraJavaProps '-Degraph.indexedPredicatePercent=70','-Degraph.rtreeTargets=false'
+    [string[]] $ExtraJavaProps = @(),
+    # Suffix for the run directory, so an A/B pair is told apart at a glance
+    [string] $RunTag = ""
 )
 
 Set-StrictMode -Version Latest
@@ -76,7 +81,16 @@ Write-Host "egraph server: up"
 
 $overallStart = Get-Date
 Write-Host ("=== Phase 1/3: capture for {0:N1} h, started {1:HH:mm:ss} ===" -f $Hours, $overallStart)
-& powershell -ExecutionPolicy Bypass -File $startScript -TimeoutSeconds $timeoutSeconds
+# Called directly rather than through powershell.exe -File so that -ExtraJavaProps stays an
+# array: passed on a command line its elements would bind positionally instead.
+$startParams = @{ TimeoutSeconds = $timeoutSeconds }
+if ($ExtraJavaProps.Count -gt 0) {
+    $startParams["ExtraJavaProps"] = $ExtraJavaProps
+}
+if (-not [string]::IsNullOrWhiteSpace($RunTag)) {
+    $startParams["RunTag"] = $RunTag
+}
+& $startScript @startParams
 $captureEnd = Get-Date
 Write-Host ("Capture finished after {0:N2} h" -f ($captureEnd - $overallStart).TotalHours)
 
