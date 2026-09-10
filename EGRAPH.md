@@ -13,20 +13,19 @@
 
 ```
 ① 生成被测查询          SQLite3OracleFactory
-   随机建一张普通表 t0，随机造 WHERE，丢弃恒不为真的谓词
+   只建一张普通表 t0（EGRAPH 全程只查单表），随机造 WHERE
+   两道预过滤（EGraphPredicateFilter）：丢弃恒不为真的谓词、
+   丢弃 e-graph 表示不了的谓词；再用探针查询丢弃命中 0 行的 base query
+   数据完全来自 SQLancer 自己的 INSERT/UPDATE，不额外补数
         │
-② 按谓词补数据          EGraphDataGenerator
-   从 WHERE 里提取字面量 → 派生边界点 → DELETE + 按池取模灌入
-   目的：保证 base query 至少命中一行，否则整次比较是空对空
-        │
-③ 求等价变体            egraph-server（Rust，HTTP）
+② 求等价变体            egraph-server（Rust，HTTP）
    base query ──POST /generate-variants──► 3 个等价改写
         │
-④ 套 wrapper 执行并比对  EGraphMetamorphicOracle
+③ 套 wrapper 执行并比对  EGraphMetamorphicOracle
    原查询和每个变体都套上同一个 coverage shape 后执行
    结果集不一致 ⇒ 报 bug
         │
-⑤ 落盘可重放语料        EGraphCorpusCaseWriter / EGraphContextReplayWriter
+④ 落盘可重放语料        EGraphCorpusCaseWriter / EGraphContextReplayWriter
    供后续测覆盖率、也可反过来当输入语料
 ```
 
@@ -100,6 +99,14 @@ java ... sqlite3 --oracle=EGRAPH \
 | `-Degraph.replay.file=<path>` | 输出可重放语料，测覆盖率用 |
 | `-Dsqlite3.egraph.corpus.keyframeInterval=50` | 快照关键帧间隔，**必须与重放分块大小一致** |
 | `EGRAPH_LOG_VALIDATE=1`（环境变量） | 打开 e-graph 服务的变体校验日志，默认静默 |
+| `-Degraph.variantOnlyError.log=<path>` | 落盘"原查询成功但变体报错"的成对样本，供人工定性 |
+| `-Degraph.emptyBaseCheckPercent=<0-100>` | 原查询探针为空时仍然继续跑变体的比例，默认 10；0 = 恢复旧的一律丢弃 |
+| `EGRAPH_NODE_LIMIT`（环境变量） | e-graph 节点上限，默认 400 |
+| `EGRAPH_TIME_LIMIT_MS`（环境变量） | 单次饱和时间上限，默认 60 |
+| `EGRAPH_EXTRA_RULES=0`（环境变量） | 关掉 2026-09-08 新增的 12 条比较规则，用于 A/B |
+| `-Degraph.rtreeTargets=false` | 不再把 R-Tree 虚表当作 base query 的目标表，默认开 |
+| `-Degraph.rtreePushdownPercent=<0-100>` | R-Tree 目标表上构造**可下推谓词**的比例，默认 80；0 = 全走随机生成器 |
+| `-Degraph.indexedPredicatePercent=<0-100>` | 普通表上把 WHERE 构造成 `索引列 <op> 常量` 的比例，默认 **0**（关闭）；0 = 全走随机生成器 |
 
 ---
 
@@ -165,6 +172,31 @@ WHERE egraph_fts4m MATCH '"lcsanchor alpha beta"'
 `length(matchinfo(...))` 包一层是允许的。FTS5 的 `highlight`/`snippet`/`bm25` 同样要直接上下文，
 但可以先在子查询里算好再外层聚合。
 
+**随机提取在环状 e-graph 上会伪造节点。** `extract_randomized_impl` 检测到 e-class 环时，
+若该 e-class 里没有叶子节点，旧代码 `return rec.add(SqlLang::Symbol(0))` 凭空造一个占位符 ——
+但 `Symbol(0)` 不是中性的，`recexpr_to_sql_expr` 里 `symbols.get(&0)` 取的是**符号表第一个符号**，
+所以一个环会静默变成一个真实列引用。原查询 `c0 = 5` 提取出的变体里会出现裸 `c0` 当布尔用：
+
+```
+(c0 OR (((c0 OR ((c0 OR c0) AND ((NOT (c0 OR ...
+```
+
+这些变体全部被 `validate_with_sqlite` 拒掉，代价是白跑一遍 SQLite 校验 —— 单次请求从 26ms
+涨到 8603ms。base 53 条规则下 e-graph 基本无环，很少触发；一旦加入扩张型规则就每次都触发。
+**现在的做法是放弃这次随机游走（返回 `None`），`extract_variants` 本来就会重试
+`max_variants * 200` 次，放弃是免费的。**
+
+**饱和预算越大不一定越好。** e-graph 越大环越多、被放弃的游走越多。实测（8 条代表性查询）：
+
+| 规则集 | node_limit / time_limit | max_variants | 变体/查询 | 延迟 |
+|---|---|---|---|---|
+| base 53 | 5000 / 3000ms | 3 | 2.50 | 24ms |
+| base 53 | 400 / 60ms | 32 | 15.25 | 69ms |
+| base+extra 65 | 5000 / 3000ms | 3 | 0.88 | 40ms |
+| **base+extra 65** | **400 / 60ms** | **32** | **25.88** | **52ms** |
+
+默认值因此定为 `EGRAPH_NODE_LIMIT=400`、`EGRAPH_TIME_LIMIT_MS=60`，都可用环境变量覆盖。
+
 **`Randomly.smallNumber()` 恒为偶数。** 它是 `(int)(|nextGaussian()|) * 2`，所以
 `nrColumns = 1 + smallNumber()` 只能得到 1、3、5、7 —— **永远不会有 2 列或 4 列的表**。
 这是 SQLancer 上游多年的既有行为，改它会同时改变所有 provider 的生成分布。
@@ -182,11 +214,12 @@ JOIN；而候选池筛掉视图和虚表后，约 95% 的情况下只剩 `t0` �
 | `src/sqlancer/common/oracle/EGraphMetamorphicOracle.java` | oracle 主体：执行、比对、报 bug |
 | `src/sqlancer/common/oracle/RustEGraphVariantGenerator.java` | e-graph 服务的 HTTP 客户端 |
 | `src/sqlancer/sqlite3/SQLite3OracleFactory.java` | 约 60 个 coverage shape 的定义与 context setup |
-| `src/sqlancer/sqlite3/oracle/EGraphDataGenerator.java` | 按 WHERE 补数据、四值可满足性预过滤 |
+| `src/sqlancer/sqlite3/oracle/EGraphPredicateFilter.java` | 谓词预过滤：四值可满足性 + e-graph 兼容性 |
 | `src/sqlancer/sqlite3/oracle/EGraphCorpusCaseWriter.java` | 快照捕获与 delta 编码 |
 | `src/sqlancer/sqlite3/oracle/EGraphContextReplayWriter.java` | context setup 的重放记录 |
 | `src/sqlancer/sqlite3/oracle/SQLite3EGraphInputCorpus.java` | 语料输入解析 |
 | `src/sqlancer/sqlite3/oracle/EGraphSqlCoverage.java` | workload 统计与丢弃原因归类 |
 | `src/sqlancer/sqlite3/oracle/EGraphExampleLogger.java` | 人可读的端到端样例输出 |
-| `egraph-server/src/sql_rewrite.rs` | e-graph 规则集与变体校验 |
+| `egraph-server/src/sql_rewrite.rs` | e-graph 规则集（base 53 + extra 12）、随机提取、变体校验 |
+| `EGRAPH-PENDING-DECISIONS.md` | 待拍板的改动清单（含各自的实测依据） |
 | `coverage/sqlite/*.ps1` | 覆盖率测量与研究循环的工具链 |
