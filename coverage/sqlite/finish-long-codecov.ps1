@@ -3,7 +3,25 @@
     [int] $ReplayChunkCases = 50,
     [int] $ReplayChunkTimeoutSeconds = 120,
     [int] $ParallelWorkers = 4,
-    [switch] $NoRawSqlancerReplay
+    [switch] $NoRawSqlancerReplay,
+    # Prepends the self-contained part of the EGRAPH context setup to every chunk, so the probe
+    # tables a wrapper shape queries (egraph_fts4c and friends) exist in the chunk's own database.
+    #
+    # OPT-IN, because it was measured NET NEGATIVE. A/B on the same 2000 captured cases from the
+    # 20260909 run, four workers, identical input:
+    #
+    #                 line      branch    function   missing-context errors
+    #   prelude on    71.90%    76.62%    81.95%     201
+    #   prelude on    71.86%    76.58%    81.92%     201     <- same-arm noise: 0.04pp
+    #   prelude off   72.70%    77.41%    82.43%     250
+    #
+    # So it does what it was built for - "no such table: egraph_fts4c" drops from 287 to 233 and
+    # missing-context errors from 250 to 201 - and still costs 0.80pp of line coverage, 20x the
+    # 0.04pp same-arm noise. Not chunk timeouts (zero in both arms) and not CREATE conflicts (zero
+    # "already exists" in both arms); the mechanism is still unexplained. Until it is, the default
+    # stays off so the pipeline keeps the better number, and the switch keeps the experiment
+    # reproducible.
+    [switch] $ContextPrelude
 )
 
 Set-StrictMode -Version Latest
@@ -27,7 +45,7 @@ if (-not $resolvedRunDir.StartsWith($resolvedCoverageRoot, [System.StringCompari
 }
 
 $buildDir = Join-Path $coverageRoot "build"
-$sourceDir = Join-Path $coverageRoot "sqlite-amalgamation-3490100"
+$sourceDir = Join-Path $coverageRoot "sqlite-amalgamation-3530400"
 $sqliteExe = Join-Path $buildDir "sqlite3_cov.exe"
 $gcovExe = "D:\Dev-Cpp\TDM-GCC-64\bin\gcov.exe"
 $sqliteSource = Join-Path $sourceDir "sqlite3.c"
@@ -163,11 +181,125 @@ function Flush-EGraphReplayQueryBuffer {
     Write-ReplayBufferedLines -Writer $Writer -Lines $Lines
 }
 
+# The chunked replay runs each chunk against its own fresh database, and it only ever wrote the
+# PRAGMA preamble plus the case lines - never the EGRAPH context setup. So every probe table a
+# wrapper shape depends on (egraph_fts4c, egraph_fts_content_src, the rtree/json probes, ...) was
+# absent, and those wrapped queries died with "no such table". Measured on the 20260909 run:
+# 7664 + 1046 such errors and 977 of 1097 chunks marked failed, which threw away exactly the
+# coverage those shapes exist to reach (the uncovered report still listed 460 FTS3/FTS4 and 999
+# FTS5 oracle lines despite 13 shapes being assigned to them).
+#
+# The whole context file cannot simply be prepended: it also records statements that touch
+# SQLancer's own tables (t0, x1, ttt, ...), which do not exist yet at the head of a chunk. Those
+# are the 131-134 errors the standalone context replay reports, and prepending them verbatim would
+# multiply that by the chunk count. Rather than parse SQL to tell the two apart, let SQLite decide:
+# replay the context against an empty database once and keep only the statements that succeed.
+function Get-EGraphContextPrelude {
+    param(
+        [string] $ContextPath,
+        [string] $SqliteExe,
+        [string] $ScratchDir
+    )
+
+    if (-not (Test-Path -LiteralPath $ContextPath)) {
+        return @()
+    }
+    $statements = @([System.IO.File]::ReadLines($ContextPath) |
+        Where-Object { $_.Trim() -ne "" -and -not $_.Trim().StartsWith("--") })
+    if ($statements.Count -eq 0) {
+        return @()
+    }
+
+    New-Item -ItemType Directory -Force -Path $ScratchDir | Out-Null
+    # Keep the probe run's counters out of the real measurement.
+    $probeGcda = Join-Path $ScratchDir "gcda-probe"
+    New-Item -ItemType Directory -Force -Path $probeGcda | Out-Null
+
+    $kept = $statements
+    # A statement can also fail because one it depends on failed, so converge instead of filtering
+    # once. Three passes is far more than the dependency chains in this file need.
+    for ($pass = 0; $pass -lt 3; $pass++) {
+        $probeSql = Join-Path $ScratchDir ("context-probe-{0}.sql" -f $pass)
+        $probeDb = Join-Path $ScratchDir ("context-probe-{0}.db" -f $pass)
+        $probeErr = Join-Path $ScratchDir ("context-probe-{0}.err.log" -f $pass)
+        if (Test-Path -LiteralPath $probeDb) { Remove-Item -LiteralPath $probeDb -Force }
+
+        $probeWriter = [System.IO.StreamWriter]::new($probeSql, $false,
+            (New-Object System.Text.UTF8Encoding($false)))
+        try {
+            $probeWriter.WriteLine(".bail off")
+            $probeWriter.WriteLine(".timeout 1000")
+            $probeWriter.WriteLine("PRAGMA temp_store=FILE;")
+            $headerLines = 3
+            foreach ($stmt in $kept) { $probeWriter.WriteLine($stmt) }
+        } finally {
+            $probeWriter.Dispose()
+        }
+
+        $oldPrefix = $env:GCOV_PREFIX
+        $env:GCOV_PREFIX = $probeGcda
+        try {
+            $probeProcess = Start-Process -FilePath $SqliteExe -ArgumentList @($probeDb) `
+                -RedirectStandardInput $probeSql -RedirectStandardOutput (Join-Path $ScratchDir "context-probe.out.log") `
+                -RedirectStandardError $probeErr -WindowStyle Hidden -Wait -PassThru
+            $null = $probeProcess
+        } finally {
+            if ($null -eq $oldPrefix) { Remove-Item Env:\GCOV_PREFIX -ErrorAction SilentlyContinue }
+            else { $env:GCOV_PREFIX = $oldPrefix }
+        }
+
+        # "Parse error near line N: ..." / "Error near line N: ..." - N indexes the probe file.
+        $failedLines = New-Object System.Collections.Generic.HashSet[int]
+        if (Test-Path -LiteralPath $probeErr) {
+            foreach ($errLine in [System.IO.File]::ReadLines($probeErr)) {
+                $m = [regex]::Match($errLine, 'near line (\d+):')
+                if ($m.Success) {
+                    $null = $failedLines.Add([int] $m.Groups[1].Value - $headerLines)
+                }
+            }
+        }
+        if ($failedLines.Count -eq 0) {
+            break
+        }
+        $surviving = New-Object System.Collections.Generic.List[string]
+        for ($i = 0; $i -lt $kept.Count; $i++) {
+            if (-not $failedLines.Contains($i + 1)) {
+                $surviving.Add($kept[$i])
+            }
+        }
+        $kept = @($surviving)
+        if ($kept.Count -eq 0) {
+            break
+        }
+    }
+
+    Write-Host ("EGRAPH context prelude: {0} of {1} statements are self-contained and will be prepended to every chunk" -f `
+            $kept.Count, $statements.Count)
+    return @($kept)
+}
+
+function Write-ContextPrelude {
+    param(
+        [System.IO.StreamWriter] $Writer,
+        [string[]] $Statements
+    )
+
+    if ($null -eq $Statements -or $Statements.Count -eq 0) {
+        return
+    }
+    $Writer.WriteLine("-- EGRAPH_CONTEXT_PRELUDE_BEGIN")
+    foreach ($stmt in $Statements) {
+        $Writer.WriteLine($stmt)
+    }
+    $Writer.WriteLine("-- EGRAPH_CONTEXT_PRELUDE_END")
+}
+
 function Write-EGraphReplayChunks {
     param(
         [string] $SourcePath,
         [string] $ChunkDir,
-        [int] $CasesPerChunk
+        [int] $CasesPerChunk,
+        [string[]] $ContextPrelude = @()
     )
 
     if ($CasesPerChunk -lt 1) {
@@ -221,6 +353,7 @@ function Write-EGraphReplayChunks {
                         $writer = [System.IO.StreamWriter]::new($currentChunkPath, $false,
                             [System.Text.UTF8Encoding]::new($false))
                         Write-ReplayPreamble -Writer $writer
+                        Write-ContextPrelude -Writer $writer -Statements $ContextPrelude
                     }
                     $casesInChunk++
                 }
@@ -230,6 +363,7 @@ function Write-EGraphReplayChunks {
                     $writer = [System.IO.StreamWriter]::new($currentChunkPath, $false,
                         [System.Text.UTF8Encoding]::new($false))
                     Write-ReplayPreamble -Writer $writer
+                        Write-ContextPrelude -Writer $writer -Statements $ContextPrelude
                 }
                 $writer.WriteLine((Convert-ReplayLine -Line $line))
                 if ($line.StartsWith("-- EGRAPH_REPLAY_QUERY")) {
@@ -244,6 +378,7 @@ function Write-EGraphReplayChunks {
                 $writer = [System.IO.StreamWriter]::new($currentChunkPath, $false,
                     [System.Text.UTF8Encoding]::new($false))
                 Write-ReplayPreamble -Writer $writer
+                        Write-ContextPrelude -Writer $writer -Statements $ContextPrelude
             }
             if ($inReplayQuery) {
                 $replayQueryLines.Add($line)
@@ -553,8 +688,13 @@ try {
     $gcdaRootDir = $resolvedBuildDir
     if ($replayCaseCount -gt 0) {
         $chunkDir = Join-Path $resolvedRunDir "replay-chunks"
+        $contextPrelude = @()
+        if ($ContextPrelude) {
+            $contextPrelude = @(Get-EGraphContextPrelude -ContextPath $contextReplayFile -SqliteExe $sqliteExe `
+                    -ScratchDir (Join-Path $resolvedRunDir "context-prelude"))
+        }
         $chunks = @(Write-EGraphReplayChunks -SourcePath $replaySource -ChunkDir $chunkDir `
-                -CasesPerChunk $ReplayChunkCases)
+                -CasesPerChunk $ReplayChunkCases -ContextPrelude $contextPrelude)
         $replayChunkCount = $chunks.Count
         $gcovToolExe = Join-Path (Split-Path -Parent $gcovExe) "gcov-tool.exe"
         $gcdaWorkerDirs = New-Object System.Collections.Generic.List[string]

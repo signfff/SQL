@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Builds the gcov-instrumented SQLite shell used for code coverage.
 
@@ -16,7 +16,7 @@
     collected .gcda file, so all coverage baselines restart from here.
 #>
 param(
-    [string] $SourceDir = "D:\sqlancer\coverage\sqlite\sqlite-amalgamation-3490100",
+    [string] $SourceDir = "D:\sqlancer\coverage\sqlite\sqlite-amalgamation-3530400",
     [string] $BuildDir = "D:\sqlancer\coverage\sqlite\build",
     [string] $Gcc = "D:\Dev-Cpp\TDM-GCC-64\bin\gcc.exe",
     [switch] $NoBackup
@@ -47,7 +47,24 @@ $featureDefines = @(
     "-DSQLITE_ENABLE_STAT4",
     "-DSQLITE_ENABLE_MATH_FUNCTIONS",
     "-DSQLITE_ENABLE_COLUMN_METADATA",
-    "-DSQLITE_ENABLE_LOAD_EXTENSION"
+    "-DSQLITE_ENABLE_LOAD_EXTENSION",
+    # Added 2026-09-08 after diffing PRAGMA compile_options against the sqlite-jdbc build; it was
+    # missing here in the 3.49.1 build too, so this was never aligned. Verified working:
+    # median(x) returns a value on the coverage binary.
+    "-DSQLITE_ENABLE_PERCENTILE"
+    #
+    # Two differences remain and CANNOT be closed from the public amalgamation:
+    #
+    #   SQLITE_ENABLE_UPDATE_DELETE_LIMIT - must be passed to lemon when parse.c is generated, not
+    #     to gcc. The shipped amalgamation carries pre-generated parse tables without the rule, so
+    #     defining the macro only makes PRAGMA compile_options claim support that is not there
+    #     (verified: "DELETE FROM t LIMIT 1" still fails to parse with the macro defined, while it
+    #     succeeds under sqlite-jdbc). Deliberately NOT defined - a compile_options entry that lies
+    #     is worse than a visible difference. Consequence to keep in mind: SQLancer can execute
+    #     "DELETE/UPDATE ... LIMIT" during a run, and those statements will fail on replay. That is
+    #     a real contributor to the "Replay chunks failed" count and it is not a coverage bug.
+    #
+    #   JDBC_EXTENSIONS - registered by the sqlite-jdbc driver itself, not an amalgamation flag.
 )
 
 # Limits and behaviour: a statement that the JDBC build accepts must not be

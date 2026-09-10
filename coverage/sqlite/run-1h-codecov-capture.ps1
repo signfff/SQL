@@ -91,7 +91,7 @@ Write-Host "Run dir: $runDir"
 
 $coverageRoot = "D:\sqlancer\coverage\sqlite"
 $buildDir = Join-Path $coverageRoot "build"
-$sourceDir = Join-Path $coverageRoot "sqlite-amalgamation-3490100"
+$sourceDir = Join-Path $coverageRoot "sqlite-amalgamation-3530400"
 $sqliteExe = Join-Path $buildDir "sqlite3_cov.exe"
 $gcovExe = "D:\Dev-Cpp\TDM-GCC-64\bin\gcov.exe"
 $sqliteSource = Join-Path $sourceDir "sqlite3.c"

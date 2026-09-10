@@ -1,7 +1,7 @@
-param(
+﻿param(
     [switch] $IncludeAutoResearchCorpus,
     [switch] $NoAutoResearchCorpus,
-    # Extra -D properties, e.g. -ExtraJavaProps '-Dsqlite3.egraph.deriveData=defaults'
+    # Extra -D properties, e.g. -ExtraJavaProps '-Dsqlite3.egraph.corpusSetupOnly=true'
     [string[]] $ExtraJavaProps = @(),
     # Suffix for the run directory so A/B runs are told apart at a glance
     [string] $RunTag = "",
@@ -155,6 +155,12 @@ $javaArgs += @(
     "-Dsqlite3.egraph.corpus.maxEmptyCases=20000",
     "-Dsqlite3.egraph.corpus.sampleInterval=3",
     "-Dsqlite3.egraph.corpus.keyframeInterval=50",
+    # Pairs where the variant errored but the original ran. Not a bug report on its own - a deeper
+    # rewritten tree can legitimately hit "expression tree is too large" - but the counter is what
+    # surfaced the IS UNKNOWN and double-LIMIT defects, so keep capturing it.
+    "-Degraph.variantOnlyError.log=$runDirariant-only-errors.log",
+    # Reproducers for the strongest judgment the oracle has: one side empty, the other not.
+    "-Degraph.singleSideEmptyLog=$runDir\single-side-empty-reproducers.sql",
     "-Dsqlite3.egraph.corpus.maxRowsPerTable=128",
     "-Dsqlite3.egraph.contextReplay.maxStatements=4000",
     "-Dsqlite3.egraph.corpus.selectOnlyTemplates=true",
@@ -174,7 +180,7 @@ $javaArgs += @(
     "--log-each-select=true",
     "--egraph-log-each-select=false",
     "--egraph-url=http://127.0.0.1:3000",
-    "--egraph-max-variants=3",
+    "--egraph-max-variants=16",
     "--egraph-timeout-millis=3000",
     "sqlite3",
     "--oracle=EGRAPH",

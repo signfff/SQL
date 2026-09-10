@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Unattended 5-hour EGRAPH capture followed by the coverage measurement.
 
@@ -15,7 +15,8 @@
 param(
     [double] $Hours = 5,
     [int] $ParallelWorkers = 4,
-    [switch] $SkipServerStart
+    [switch] $SkipServerStart,
+    [switch] $SkipAutoResearch
 )
 
 Set-StrictMode -Version Latest
@@ -25,10 +26,11 @@ $root = "D:\sqlancer"
 $coverageRoot = Join-Path $root "coverage\sqlite"
 $startScript = Join-Path $coverageRoot "start-long-codecov-capture.ps1"
 $finishScript = Join-Path $coverageRoot "finish-long-codecov.ps1"
+$autoResearchScript = Join-Path $coverageRoot "auto-research-codecov.ps1"
 $serverExe = Join-Path $root "egraph-server\target\release\egraph-server.exe"
 $timeoutSeconds = [int] [math]::Round($Hours * 3600)
 
-foreach ($path in @($startScript, $finishScript, (Join-Path $coverageRoot "build\sqlite3_cov.exe"))) {
+foreach ($path in @($startScript, $finishScript, $autoResearchScript, (Join-Path $coverageRoot "build\sqlite3_cov.exe"))) {
     if (-not (Test-Path -LiteralPath $path)) {
         throw "Missing prerequisite: $path"
     }
@@ -73,7 +75,7 @@ if (-not (Test-EGraphServer)) {
 Write-Host "egraph server: up"
 
 $overallStart = Get-Date
-Write-Host ("=== Phase 1/2: capture for {0:N1} h, started {1:HH:mm:ss} ===" -f $Hours, $overallStart)
+Write-Host ("=== Phase 1/3: capture for {0:N1} h, started {1:HH:mm:ss} ===" -f $Hours, $overallStart)
 & powershell -ExecutionPolicy Bypass -File $startScript -TimeoutSeconds $timeoutSeconds
 $captureEnd = Get-Date
 Write-Host ("Capture finished after {0:N2} h" -f ($captureEnd - $overallStart).TotalHours)
@@ -87,14 +89,35 @@ if (Test-Path -LiteralPath $replayFile) {
     Write-Warning "No replay-all.sql in the run dir; the coverage phase will have nothing to replay."
 }
 
-Write-Host ("=== Phase 2/2: coverage measurement, started {0:HH:mm:ss} ===" -f (Get-Date))
+Write-Host ("=== Phase 2/3: coverage measurement, started {0:HH:mm:ss} ===" -f (Get-Date))
 & powershell -ExecutionPolicy Bypass -File $finishScript -RunDir $runDir -ParallelWorkers $ParallelWorkers
+$coverageEnd = Get-Date
+
+# Phase 3: rank candidate workloads by their coverage delta so the ranking can steer the next
+# round's wrapper shapes. Non-fatal on purpose - a four-hour capture plus a completed coverage
+# measurement must not be thrown away because the research phase tripped over a missing baseline.
+$autoResearchStatus = "skipped"
+if (-not $SkipAutoResearch) {
+    Write-Host ("=== Phase 3/3: auto-research, started {0:HH:mm:ss} ===" -f (Get-Date))
+    $autoResearchOut = Join-Path $runDir "auto-research"
+    try {
+        & powershell -ExecutionPolicy Bypass -File $autoResearchScript -BaseReplay $replayFile -OutputRoot $autoResearchOut
+        if ($LASTEXITCODE -ne 0) {
+            throw "auto-research-codecov.ps1 exited with $LASTEXITCODE"
+        }
+        $autoResearchStatus = "ok: $autoResearchOut"
+    } catch {
+        $autoResearchStatus = "FAILED: $($_.Exception.Message)"
+        Write-Warning "Auto-research phase failed, capture and coverage results are unaffected: $($_.Exception.Message)"
+    }
+}
 $done = Get-Date
 
 Write-Host ""
-Write-Host ("=== Done. Capture {0:N2} h, coverage {1:N2} h, total {2:N2} h ===" -f `
-        ($captureEnd - $overallStart).TotalHours, ($done - $captureEnd).TotalHours,
-        ($done - $overallStart).TotalHours)
+Write-Host ("=== Done. Capture {0:N2} h, coverage {1:N2} h, auto-research {2:N2} h, total {3:N2} h ===" -f `
+        ($captureEnd - $overallStart).TotalHours, ($coverageEnd - $captureEnd).TotalHours,
+        ($done - $coverageEnd).TotalHours, ($done - $overallStart).TotalHours)
+Write-Host "Auto-research:      $autoResearchStatus" 
 $report = Join-Path $runDir "sqlite-code-coverage-result.txt"
 if (Test-Path -LiteralPath $report) {
     Write-Host ""

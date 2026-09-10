@@ -51,7 +51,7 @@ foreach ($dir in @("expanded-smoke-20260831", "nodelta-smoke-20260831-043239")) 
 }
 
 $runDirs = @(Get-ChildItem -LiteralPath $root -Directory |
-    Where-Object { $_.Name -notlike "build*" -and $_.Name -ne "sqlite-amalgamation-3490100" })
+    Where-Object { $_.Name -notlike "build*" -and $_.Name -ne "sqlite-amalgamation-3530400" })
 
 foreach ($runDir in $runDirs) {
     if ($claimed.Contains($runDir.FullName)) {

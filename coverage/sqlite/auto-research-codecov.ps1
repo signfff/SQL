@@ -15,7 +15,7 @@ Set-Location "D:\sqlancer"
 $coverageRoot = "D:\sqlancer\coverage\sqlite"
 $buildDir = Join-Path $coverageRoot "build"
 $sqliteExe = Join-Path $buildDir "sqlite3_cov.exe"
-$sourceDir = Join-Path $coverageRoot "sqlite-amalgamation-3490100"
+$sourceDir = Join-Path $coverageRoot "sqlite-amalgamation-3530400"
 $gcovExe = "D:\Dev-Cpp\TDM-GCC-64\bin\gcov.exe"
 
 if (-not (Test-Path -LiteralPath $sqliteExe)) {
@@ -881,7 +881,13 @@ function Write-ReplayPreamble {
     $Writer.WriteLine("PRAGMA automatic_index=ON;")
     $Writer.WriteLine("PRAGMA journal_mode=OFF;")
     $Writer.WriteLine("PRAGMA synchronous=OFF;")
-    $Writer.WriteLine("PRAGMA temp_store=MEMORY;")
+    # Must match finish-long-codecov.ps1: NOT temp_store=MEMORY. vdbesort.c guards its whole
+    # PMA / external-merge path with !sqlite3TempInMemory(db), so an in-memory temp store makes
+    # that subsystem unreachable during measurement. This script was left on MEMORY when
+    # finish-long was fixed, which biased every ranking twice over: sorting-related candidates
+    # were measured with the subsystem invisible, AND their deltas were computed against a
+    # baseline that finish-long had produced with temp_store=FILE.
+    $Writer.WriteLine("PRAGMA temp_store=FILE;")
 }
 
 function Convert-ReplayLine {
