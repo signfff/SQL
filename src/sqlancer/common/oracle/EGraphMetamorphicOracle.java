@@ -132,6 +132,7 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
             }
             lastQueryString = originalQuery;
 
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.beginPlanGroup();
             long origExecStart = System.currentTimeMillis();
             sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " original-exec start source="
                     + querySource + " sql=" + formatQuery(originalQuery));
@@ -205,7 +206,7 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                 long varExecStart = System.currentTimeMillis();
                 sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " variant-exec start source="
                         + querySource + " variant#" + (i + 1) + " sql=" + formatQuery(variantQuery));
-                List<String> variantResult = getResultRows(variantQuery, errors, state);
+                List<String> variantResult = getResultRows(variantQuery, errors, state, originalQuery);
                 long varExecTime = System.currentTimeMillis() - varExecStart;
                 sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " variant-exec done source="
                         + querySource + " variant#" + (i + 1) + " rows=" + variantResult.size() + " ms="
@@ -268,6 +269,7 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
             skipped = true;
             throw e;
         } finally {
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.endPlanGroup();
             if (show && !skipped) {
                 System.err.println("[MONITOR] Complete check shown.");
             }
@@ -354,6 +356,18 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
 
     private static List<String> getResultRows(String queryString, ExpectedErrors errors, SQLGlobalState<?, ?> state)
             throws SQLException {
+        return getResultRows(queryString, errors, state, null);
+    }
+
+    /**
+     * A non-null originalQueryForTriage marks this execution as a variant whose original already ran
+     * successfully. An expected error on that side means the rewrite changed whether the query can run
+     * at all - information the original execution could not give us, and which was previously dropped
+     * as noise. It is recorded rather than reported: a rewritten tree can be deeper or shaped so that
+     * no index applies, making "expression tree is too large" / "no query solution" legitimate.
+     */
+    private static List<String> getResultRows(String queryString, ExpectedErrors errors, SQLGlobalState<?, ?> state,
+            String originalQueryForTriage) throws SQLException {
         sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordExecution(queryString, state);
         SQLQueryAdapter q = new SQLQueryAdapter(queryString, errors, true, state.getOptions().canonicalizeSqlString());
         List<String> rows = new ArrayList<>();
@@ -361,6 +375,10 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
         try {
             result = q.executeAndGet(state);
             if (result == null) {
+                if (originalQueryForTriage != null) {
+                    sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordVariantOnlyError(
+                            "(expected error swallowed by SQLQueryAdapter)", originalQueryForTriage, queryString);
+                }
                 throw new IgnoreMeException();
             }
             if (state.getOptions().logEachSelect() && state.getOptions().egraphLogEachSelect()) {
@@ -382,6 +400,10 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                 throw e;
             }
             if (e.getMessage() != null && errors.errorIsExpected(e.getMessage())) {
+                if (originalQueryForTriage != null) {
+                    sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordVariantOnlyError(e.getMessage(),
+                            originalQueryForTriage, queryString);
+                }
                 throw new IgnoreMeException();
             }
             throw new AssertionError(queryString, e);

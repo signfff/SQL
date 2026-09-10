@@ -44,6 +44,7 @@ import sqlancer.sqlite3.gen.dml.SQLite3InsertGenerator;
 import sqlancer.sqlite3.gen.dml.SQLite3StatTableGenerator;
 import sqlancer.sqlite3.gen.dml.SQLite3UpdateGenerator;
 import sqlancer.sqlite3.oracle.SQLite3EGraphInputCorpus;
+import sqlancer.sqlite3.schema.SQLite3Schema.SQLite3Column;
 import sqlancer.sqlite3.schema.SQLite3Schema.SQLite3Table;
 
 @AutoService(DatabaseProvider.class)
@@ -121,6 +122,9 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
     private enum TableType {
         NORMAL, FTS, RTREE
     }
+
+    private static final boolean EGRAPH_RTREE_TARGETS = !"false"
+            .equalsIgnoreCase(System.getProperty("egraph.rtreeTargets", "true"));
 
     private static final Action[] EGRAPH_ACTIONS = {
             Action.PRAGMA,
@@ -216,21 +220,45 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
             if (isEGraph && SQLite3EGraphInputCorpus.isConfigured(globalState.getDbmsSpecificOptions())) {
                 return;
             }
+            // EGRAPH always queries a single table: SQLite3OracleFactory picks one non-view,
+            // non-virtual, non-empty table and wraps it in a singleton AbstractTables. Additional
+            // tables would never appear in a query and would only split the INSERT/CREATE INDEX
+            // budget, making it more likely that the chosen table ends up empty.
             int nrTablesToCreate = 1;
-            if (Randomly.getBoolean()) {
+            // With egraph.rtreeTargets on, EGRAPH also gets one R-Tree table so the oracle has
+            // something whose predicates survive SQLite's front-end normalisation. See the comment
+            // on the target-table filter in SQLite3OracleFactory for why R-Tree specifically.
+            boolean egraphRtreeTable = isEGraph && EGRAPH_RTREE_TARGETS
+                    && globalState.getDbmsSpecificOptions().testRtree;
+            if (egraphRtreeTable) {
                 nrTablesToCreate++;
             }
-            while (Randomly.getBooleanWithSmallProbability()) {
-                nrTablesToCreate++;
+            if (!isEGraph) {
+                if (Randomly.getBoolean()) {
+                    nrTablesToCreate++;
+                }
+                while (Randomly.getBooleanWithSmallProbability()) {
+                    nrTablesToCreate++;
+                }
             }
             int i = 0;
+            String rtreeTableName = null;
 
             do {
                 SQLQueryAdapter tableQuery;
-                if (isEGraph && i == 0) {
-                    // EGRAPH must have at least one normal table
-                    tableQuery = SQLite3TableGenerator.createTableStatement(
-                            DBMSCommon.createTableName(i), globalState);
+                if (isEGraph) {
+                    // Table 0 is always a normal one: the wrapper shapes, the corpus setup and the
+                    // snapshot writer all assume a regular table named t0 exists. The extra table,
+                    // when asked for, is an R-Tree - never FTS, whose index is only reachable
+                    // through MATCH and which the rewrite rules therefore cannot drive.
+                    if (egraphRtreeTable && i == 1) {
+                        tableQuery = SQLite3CreateVirtualRtreeTabelGenerator.createTableStatement("rt" + i,
+                                globalState);
+                        rtreeTableName = "rt" + i;
+                    } else {
+                        tableQuery = SQLite3TableGenerator.createTableStatement(
+                                DBMSCommon.createTableName(i), globalState);
+                    }
                 } else {
                     tableQuery = getTableQuery(globalState, i);
                 }
@@ -238,6 +266,9 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
                 globalState.executeStatement(tableQuery);
             } while (globalState.getSchema().getDatabaseTables().size() < nrTablesToCreate);
             assert globalState.getSchema().getTables().getTables().size() == nrTablesToCreate;
+            if (rtreeTableName != null) {
+                seedRtreeTable(globalState, rtreeTableName);
+            }
             checkTablesForGeneratedColumnLoops(globalState);
             if (globalState.getDbmsSpecificOptions().testDBStats && Randomly.getBooleanWithSmallProbability()) {
                 SQLQueryAdapter tableQuery = new SQLQueryAdapter(
@@ -265,6 +296,58 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
             if (isEGraph) {
                 replayEGraphInputCorpus(globalState);
             }
+        }
+    }
+
+    /**
+     * Gives the EGRAPH R-Tree table a deterministic starting population.
+     *
+     * SQLancer's generic INSERT cannot fill an R-Tree usefully: it picks a random subset of columns,
+     * so the coordinate pairs are usually incomplete, and the values it invents violate the module's
+     * own x1&lt;=x2 constraint often enough that most rows are silently dropped by OR IGNORE. The
+     * table then sits at a couple of rows, every random predicate probes empty, and the check is
+     * discarded before the query ever runs - which is exactly why the first two runs after enabling
+     * R-Tree targets reported zero queries against it.
+     *
+     * The rows are spread over overlapping and nested bounding boxes on purpose: that is what makes
+     * the R-Tree actually branch, so a rewritten predicate can reach a different node-traversal path
+     * rather than just scanning a single leaf.
+     */
+    private static void seedRtreeTable(SQLite3GlobalState globalState, String tableName) {
+        try {
+            List<SQLite3Column> columns = globalState.getSchema().getDatabaseTables().stream()
+                    .filter(t -> t.getName().equals(tableName)).findFirst()
+                    .map(SQLite3Table::getColumns).orElse(null);
+            if (columns == null || columns.size() < 3) {
+                return;
+            }
+            // Column 0 is the R-Tree id; the rest come in (min, max) pairs.
+            int nrPairs = (columns.size() - 1) / 2;
+            if (nrPairs < 1) {
+                return;
+            }
+            StringBuilder names = new StringBuilder(columns.get(0).getName());
+            for (int c = 1; c <= nrPairs * 2; c++) {
+                names.append(", ").append(columns.get(c).getName());
+            }
+            StringBuilder values = new StringBuilder();
+            for (int row = 0; row < 64; row++) {
+                if (row > 0) {
+                    values.append(", ");
+                }
+                values.append('(').append(row);
+                for (int pair = 0; pair < nrPairs; pair++) {
+                    int lo = (row * 7 + pair * 13) % 40 - 20;
+                    int hi = lo + (row % 5) + 1;
+                    values.append(", ").append(lo).append(", ").append(hi);
+                }
+                values.append(')');
+            }
+            globalState.executeStatement(new SQLQueryAdapter(
+                    "INSERT OR IGNORE INTO " + tableName + "(" + names + ") VALUES " + values, true));
+            globalState.updateSchema();
+        } catch (Exception ignored) {
+            // A failed seed only means the table stays empty and the oracle skips it.
         }
     }
 

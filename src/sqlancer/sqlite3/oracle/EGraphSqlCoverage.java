@@ -91,6 +91,32 @@ public class EGraphSqlCoverage {
     static final AtomicInteger satisfiabilityAccepts = new AtomicInteger(0);
     static final AtomicInteger baseProbeTotal = new AtomicInteger(0);
     static final AtomicInteger baseProbeEmpty = new AtomicInteger(0);
+
+    // An equivalent rewrite should not change whether the query can run at all. When the variant
+    // raises an error the original did not, the check is currently abandoned as noise. Counted here
+    // for triage rather than reported: a rewritten tree can be deeper than the original, so
+    // "expression tree is too large" / "no query solution" are legitimate, not defects.
+    static final Map<String, AtomicInteger> variantOnlyErrors = new ConcurrentHashMap<>();
+    static final AtomicInteger variantOnlyErrorTotal = new AtomicInteger(0);
+
+    // Checks that ran with an empty original result on purpose (see EMPTY_BASE_CHECK_PERCENT).
+    static final AtomicInteger emptyBaseChecks = new AtomicInteger(0);
+
+    // Which kind of table the base query targeted, and how many of those survived the non-empty
+    // probe. Both halves are needed: a kind that is picked often but never survives is a different
+    // problem from one that is never picked.
+    static final Map<String, AtomicInteger> targetTableKinds = new ConcurrentHashMap<>();
+    static final Map<String, AtomicInteger> targetTableKindUsable = new ConcurrentHashMap<>();
+    private static final ThreadLocal<String> LAST_TARGET_KIND = new ThreadLocal<>();
+
+    // How many DISTINCT execution plans the original plus its variants produced within one check.
+    // This is the direct measure of whether a rewrite is worth anything: if every variant of a
+    // predicate compiles to the same plan, the two sides run the same code and the comparison
+    // cannot fail no matter how many variants there are. Bucketed by target table kind because the
+    // whole point of allowing R-Tree targets is the claim that its plans do NOT collapse the way a
+    // plain table's do.
+    private static final ThreadLocal<java.util.Set<String>> PLAN_GROUP = new ThreadLocal<>();
+    static final Map<String, AtomicInteger> planDistinctHistogram = new ConcurrentHashMap<>();
     static final Map<String, AtomicInteger> baseProbeEmptyFeatures = new ConcurrentHashMap<>();
     static final AtomicInteger originalEmptyResults = new AtomicInteger(0);
     static final AtomicInteger originalNonEmptyResults = new AtomicInteger(0);
@@ -195,6 +221,73 @@ public class EGraphSqlCoverage {
         }
     }
 
+    /**
+     * Records an error raised by a variant whose original ran fine. Grouped by normalized message so
+     * the report names the cause; the pair is appended to egraph.variantOnlyError.log when that
+     * property is set, so the cases can be replayed and triaged by hand.
+     */
+    public static void recordVariantOnlyError(String message, String originalSql, String variantSql) {
+        String key = message == null ? "unknown" : message.replaceAll("[0-9]+", "N").trim();
+        if (key.length() > 90) {
+            key = key.substring(0, 90);
+        }
+        variantOnlyErrorTotal.incrementAndGet();
+        variantOnlyErrors.computeIfAbsent(key, k -> new AtomicInteger()).incrementAndGet();
+        String samplePath = System.getProperty("egraph.variantOnlyError.log");
+        if (samplePath != null && !samplePath.isBlank()) {
+            synchronized (EGraphSqlCoverage.class) {
+                try (FileWriter writer = new FileWriter(samplePath, true)) {
+                    writer.write("-- EGRAPH_VARIANT_ONLY_ERROR: " + key + System.lineSeparator());
+                    writer.write("-- original: " + originalSql + System.lineSeparator());
+                    writer.write("-- variant : " + variantSql + System.lineSeparator());
+                } catch (IOException ignored) {
+                }
+            }
+        }
+    }
+
+    /** Starts collecting execution plans for one check (original + its variants). */
+    public static void beginPlanGroup() {
+        PLAN_GROUP.set(new java.util.LinkedHashSet<>());
+    }
+
+    /** Files the distinct-plan count for the check that just finished. */
+    public static void endPlanGroup() {
+        java.util.Set<String> plans = PLAN_GROUP.get();
+        PLAN_GROUP.remove();
+        if (plans == null || plans.isEmpty()) {
+            return;
+        }
+        String kind = LAST_TARGET_KIND.get();
+        String bucket = (kind == null ? "UNKNOWN" : kind) + " / " + bucketOf(plans.size());
+        planDistinctHistogram.computeIfAbsent(bucket, k -> new AtomicInteger()).incrementAndGet();
+    }
+
+    private static String bucketOf(int distinct) {
+        if (distinct <= 1) {
+            return "1 plan (rewrite changed nothing)";
+        }
+        if (distinct == 2) {
+            return "2 plans";
+        }
+        if (distinct <= 4) {
+            return "3-4 plans";
+        }
+        if (distinct <= 8) {
+            return "5-8 plans";
+        }
+        return "9+ plans";
+    }
+
+    public static void recordTargetTableKind(String kind) {
+        LAST_TARGET_KIND.set(kind);
+        targetTableKinds.computeIfAbsent(kind, k -> new AtomicInteger()).incrementAndGet();
+    }
+
+    public static void recordEmptyBaseCheck() {
+        emptyBaseChecks.incrementAndGet();
+    }
+
     public static void recordSatisfiability(boolean accepted) {
         if (accepted) {
             satisfiabilityAccepts.incrementAndGet();
@@ -206,6 +299,10 @@ public class EGraphSqlCoverage {
     public static void recordBaseProbe(String sql, boolean nonEmpty) {
         baseProbeTotal.incrementAndGet();
         if (nonEmpty) {
+            String kind = LAST_TARGET_KIND.get();
+            if (kind != null) {
+                targetTableKindUsable.computeIfAbsent(kind, k -> new AtomicInteger()).incrementAndGet();
+            }
             return;
         }
         baseProbeEmpty.incrementAndGet();
@@ -286,8 +383,19 @@ public class EGraphSqlCoverage {
             }
             explainedQueries.incrementAndGet();
             EnumSet<ExecutionFeature> queryFeatures = EnumSet.noneOf(ExecutionFeature.class);
+            java.util.Set<String> planGroup = PLAN_GROUP.get();
+            StringBuilder planText = planGroup == null ? null : new StringBuilder();
             while (rs.next()) {
-                analyzeExecutionPlanDetail(rs.getString(4), queryFeatures);
+                String detail = rs.getString(4);
+                analyzeExecutionPlanDetail(detail, queryFeatures);
+                if (planText != null) {
+                    // EXPLAIN QUERY PLAN already renders constants as '?', so the detail column is
+                    // literal-free and can be compared across variants as-is.
+                    planText.append(detail).append('|');
+                }
+            }
+            if (planGroup != null && planText != null) {
+                planGroup.add(planText.toString());
             }
             for (ExecutionFeature feature : queryFeatures) {
                 executionHits.get(feature).incrementAndGet();
@@ -743,11 +851,47 @@ public class EGraphSqlCoverage {
                         .limit(12)
                         .forEach(entry -> w.printf("  # %6d  %s%n", entry.getValue().get(), entry.getKey()));
             }
+            int variantOnlyErrs = variantOnlyErrorTotal.get();
+            if (variantOnlyErrs > 0) {
+                w.println();
+                w.println("  Variant raised an error the original did not (equivalence-breaking candidates)");
+                w.printf("  Total: %d  -- triage these by hand; set -Degraph.variantOnlyError.log=<path> to capture pairs%n",
+                        variantOnlyErrs);
+                variantOnlyErrors.entrySet().stream()
+                        .sorted((left, right) -> Integer.compare(right.getValue().get(), left.getValue().get()))
+                        .limit(12)
+                        .forEach(entry -> w.printf("  # %6d  %s%n", entry.getValue().get(), entry.getKey()));
+            }
             w.println();
             w.println("  Base-query data generation (non-empty probe before the check)");
             w.printf("  Generated base queries: %d | Matched no row and were discarded: %d (%.1f%%) | Usable: %d (%.1f%%)%n",
                     probeTotal, probeEmpty, percentage(probeEmpty, probeTotal), probeTotal - probeEmpty,
                     percentage(probeTotal - probeEmpty, probeTotal));
+            if (!planDistinctHistogram.isEmpty()) {
+                w.println();
+                w.println("  Distinct execution plans per check (original + variants)");
+                w.println("  A check that produced only one plan ran the same bytecode on both sides:");
+                w.println("  the comparison could not have failed, however many variants it had.");
+                planDistinctHistogram.entrySet().stream()
+                        .sorted(Map.Entry.comparingByKey())
+                        .forEach(e -> w.printf("  # %-52s %7d%n", e.getKey(), e.getValue().get()));
+            }
+            if (!targetTableKinds.isEmpty()) {
+                w.println("  Base-query target table kind: generated / survived the non-empty probe");
+                targetTableKinds.entrySet().stream()
+                        .sorted((l, r) -> Integer.compare(r.getValue().get(), l.getValue().get()))
+                        .forEach(e -> {
+                            AtomicInteger usable = targetTableKindUsable.get(e.getKey());
+                            w.printf("  # %-18s %7d / %7d%n", e.getKey(), e.getValue().get(),
+                                    usable == null ? 0 : usable.get());
+                        });
+            }
+            int emptyBaseRan = emptyBaseChecks.get();
+            if (emptyBaseRan > 0) {
+                w.printf("  Of the discarded, deliberately checked anyway: %d (sampled via -Degraph.emptyBaseCheckPercent)%n",
+                        emptyBaseRan);
+                w.println("  These are the only checks that can ever trigger the single-side-empty judgment.");
+            }
             if (probeEmpty > 0 && !baseProbeEmptyFeatures.isEmpty()) {
                 w.println("  WHERE features of the discarded queries (which predicates the generator cannot satisfy)");
                 baseProbeEmptyFeatures.entrySet().stream()

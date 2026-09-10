@@ -31,7 +31,11 @@ import sqlancer.common.query.SQLancerResultSet;
 import sqlancer.common.schema.AbstractTables;
 import sqlancer.sqlite3.ast.SQLite3Expression;
 import sqlancer.sqlite3.ast.SQLite3Constant;
+import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation;
+import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation.BinaryComparisonOperator;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3ColumnName;
+import sqlancer.sqlite3.ast.SQLite3Expression.Sqlite3BinaryOperation;
+import sqlancer.sqlite3.ast.SQLite3Expression.Sqlite3BinaryOperation.BinaryOperator;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3OrderingTerm;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3OrderingTerm.Ordering;
 import sqlancer.sqlite3.ast.SQLite3Select;
@@ -43,7 +47,7 @@ import sqlancer.sqlite3.oracle.SQLite3Fuzzer;
 import sqlancer.sqlite3.oracle.SQLite3PivotedQuerySynthesisOracle;
 import sqlancer.sqlite3.oracle.SQLite3EGraphInputCorpus.CorpusQueryInput;
 import sqlancer.sqlite3.oracle.EGraphContextReplayWriter;
-import sqlancer.sqlite3.oracle.EGraphDataGenerator;
+import sqlancer.sqlite3.oracle.EGraphPredicateFilter;
 import sqlancer.sqlite3.oracle.SQLite3EGraphInputCorpus;
 import sqlancer.sqlite3.oracle.EGraphSqlCoverage;
 import sqlancer.sqlite3.oracle.tlp.SQLite3TLPAggregateOracle;
@@ -65,6 +69,16 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
 
     },
     EGRAPH {
+        @Override
+        public boolean requiresAllTablesToContainRows() {
+            // Deliberately false. The flag makes ProviderAdapter.getTestOracle discard the whole
+            // database as soon as *any* table has zero rows, throwing away the entire schema
+            // generation and data insertion - which is what collapsed throughput to 39% when the
+            // oracle stopped filling tables itself. EGRAPH instead skips empty tables when it
+            // picks its target, so an unrelated empty table costs nothing.
+            return false;
+        }
+
         @Override
         public TestOracle<SQLite3GlobalState> create(SQLite3GlobalState globalState) throws SQLException {
             if (globalState.getOptions().getEGraphUrl() == null
@@ -94,14 +108,71 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         // Fall back to the generated base-query path below.
                     }
                 }
+                if (CORPUS_SETUP_ONLY) {
+                    EGraphSqlCoverage.trace("corpus-setup-only skip reason=random-generation-path-disabled");
+                    throw new IgnoreMeException();
+                }
                 SQLite3Provider.ensureEGraphRandomDatabase(state);
-                // Pick a regular table (not view, not virtual) from existing schema
+                // Pick a table to query. Regular tables, plus R-Tree virtual tables when
+                // egraph.rtreeTargets is on (default). R-Tree is the one virtual-table module whose
+                // predicates the existing rule set can already rewrite: its columns are numeric, so
+                // a WHERE over them is the same comparison/AND/OR tree the e-graph handles for a
+                // plain table - no new language nodes or rules needed.
+                //
+                // The reason to want it: on a plain table these rewrites are pointless, because
+                // SQLite's front end (sqlite3WhereSplit flattening AND, sqlite3ExprCommute
+                // normalising `const OP col`) collapses every spelling to the same VDBE program, so
+                // both sides of the comparison run identical bytecode and a defect cancels out. On
+                // an R-Tree the constraint push-down happens *after* that normalisation and depends
+                // on the shape of the term list, so the spellings do not collapse. Measured on one
+                // predicate (x1 <= 6.0 AND x2 >= 6.0, 32 variants): six distinct plans, including
+                // full-scan-with-post-filter (no constraint consumed), one-constraint, two
+                // constraints in either order, and MULTI-INDEX OR with two separate R-Tree scans.
+                // Those are six different paths through rtree.c that must all agree.
+                //
+                // FTS stays excluded: its index is only reachable through MATCH, which egraphMode
+                // removes and which SqlLang has no node for, so rewriting an FTS predicate would
+                // only ever produce full-table scans.
+                // Empty tables are skipped rather than filled: a base query over an empty table
+                // matches nothing, which makes the metamorphic comparison vacuous.
+                // Skip empty tables rather than filling them: a base query over an empty table
+                // matches nothing, which makes the metamorphic comparison vacuous. Selecting
+                // around them is far cheaper than DELETE + reinserting a controlled pool, and
+                // the data then comes entirely from SQLancer's own INSERT/UPDATE actions.
                 List<SQLite3Table> tables = state.getSchema().getDatabaseTables().stream()
-                        .filter(t -> !t.isView() && !t.isVirtual())
+                        .filter(t -> !t.isView() && (!t.isVirtual() || isRtreeTable(state, t))
+                                && t.getNrRows(state) > 0)
                         .collect(java.util.stream.Collectors.toList());
                 if (tables.isEmpty())
                     throw new IgnoreMeException();
                 SQLite3Table chosen = Randomly.fromList(tables);
+                // Which kind of table the base query targets. Without this the report cannot tell
+                // "R-Tree was never picked" from "R-Tree was picked but every check was discarded",
+                // and the first two runs after enabling R-Tree targets were unreadable for exactly
+                // that reason.
+                // A free-form random predicate on an R-Tree reads as a full scan with a post-filter:
+                // the module only consumes `coordinateColumn <op> constant` terms, which the
+                // generator practically never produces. Build the WHERE from constraint terms
+                // instead for most R-Tree checks, and leave the rest on the random path so the
+                // shapes the rule set is usually exercised on stay represented.
+                int coordinateColumns = rtreeCoordinateColumns(state, chosen);
+                boolean rtreePushdown = coordinateColumns >= 2 && RTREE_PUSHDOWN_PERCENT > 0
+                        && Randomly.getNotCachedInteger(0, 100) < RTREE_PUSHDOWN_PERCENT;
+                // On a plain table the random predicate leaves every rewrite at "same opcodes,
+                // different order". An index-usable term instead lets the NOT-wrapping rules turn
+                // an index seek into a full scan, which is the only strategy-level difference the
+                // existing rule set can reach here. Prepared before the report bucket is chosen
+                // because it can fail (no named column, no non-blob row) and then this check has to
+                // fall back to the random path.
+                IndexedPredicate indexedPredicate = !chosen.isVirtual() && INDEXED_PREDICATE_PERCENT > 0
+                        && Randomly.getNotCachedInteger(0, 100) < INDEXED_PREDICATE_PERCENT
+                                ? prepareIndexedPredicate(state, chosen)
+                                : null;
+                // The paths are reported apart because the plan histogram buckets by exactly this
+                // string, and comparing them within one run is the whole point of the split.
+                EGraphSqlCoverage.recordTargetTableKind(chosen.isVirtual()
+                        ? (rtreePushdown ? "RTREE_VIRTUAL_PUSHDOWN" : "RTREE_VIRTUAL_RANDOM")
+                        : (indexedPredicate != null ? "REGULAR_INDEXED_CONST" : "REGULAR_RANDOM"));
                 AbstractTables<SQLite3Table, SQLite3Column> targetTables = new AbstractTables<>(
                         java.util.Collections.singletonList(chosen));
 
@@ -114,32 +185,58 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 do {
                     select = configuredGen.generateSelect();
                     select.setFromList(configuredGen.getTableRefs());
-                    whereCondition = configuredGen.generateBooleanExpression();
+                    if (rtreePushdown) {
+                        whereCondition = generateRtreePushdownWhere(chosen, coordinateColumns, configuredGen);
+                    } else if (indexedPredicate != null) {
+                        whereCondition = generateIndexedConstantWhere(indexedPredicate, configuredGen);
+                    } else {
+                        whereCondition = configuredGen.generateBooleanExpression();
+                    }
                     attempts++;
                     // Reject clauses that can never be TRUE (x-x, x<x, comparisons
                     // with NULL, ...) here rather than discovering it with a probe
                     // query after the data setup: an empty original result makes the
                     // metamorphic comparison vacuous.
-                    if (EGraphDataGenerator.isEgraphCompatible(whereCondition)) {
+                    if (EGraphPredicateFilter.isEgraphCompatible(whereCondition)) {
                         EGraphSqlCoverage.recordSatisfiability(
-                                EGraphDataGenerator.isPotentiallySatisfiable(whereCondition));
+                                EGraphPredicateFilter.isPotentiallySatisfiable(whereCondition));
                     }
-                } while ((!EGraphDataGenerator.isEgraphCompatible(whereCondition)
-                        || !EGraphDataGenerator.isPotentiallySatisfiable(whereCondition)) && attempts < 100);
-                if (!EGraphDataGenerator.isEgraphCompatible(whereCondition)
-                        || !EGraphDataGenerator.isPotentiallySatisfiable(whereCondition)) {
+                } while ((!EGraphPredicateFilter.isEgraphCompatible(whereCondition)
+                        || !EGraphPredicateFilter.isPotentiallySatisfiable(whereCondition)) && attempts < 100);
+                if (!EGraphPredicateFilter.isEgraphCompatible(whereCondition)
+                        || !EGraphPredicateFilter.isPotentiallySatisfiable(whereCondition)) {
                     throw new IgnoreMeException();
                 }
-                // Step 2-3: Generate INSERTs derived from WHERE → guaranteed non-empty,
-                // meaningful data
-                EGraphDataGenerator.setupData(state, targetTables, whereCondition);
-                // Step 4-6: Return SELECT for oracle to execute + egraph to rewrite + compare
-                EGraphBaseQuery baseQuery = buildEGraphBaseQuery(select, whereCondition, targetTables);
+                // Return SELECT for oracle to execute + egraph to rewrite + compare
+                // An index seek and a full scan visit rows in different orders, so a LIMIT would
+                // make the two sides return different rows and an ORDER BY with ties would make the
+                // order-sensitive comparison fire - both are false positives, not defects. Measured:
+                // `c1 > 1 LIMIT 5` returns ids 26,9,49,32,15 and the scanning spelling returns
+                // 4,5,9,10,11. Without LIMIT the multiset comparison is safe.
+                EGraphBaseQuery baseQuery = buildEGraphBaseQuery(select, whereCondition, targetTables,
+                        indexedPredicate != null);
                 String rewriteQuery = baseQuery.sql;
                 boolean baseHasRows = queryProducesRows(state, rewriteQuery);
                 EGraphSqlCoverage.recordBaseProbe(rewriteQuery, baseHasRows);
                 if (!baseHasRows) {
-                    throw new IgnoreMeException();
+                    // An empty original is only vacuous if the variants are empty too. If a variant
+                    // returns rows, that is the cleanest signal this oracle has - no row-order and no
+                    // value-formatting ambiguity, straight to hasSingleSideEmptyMismatch. Discarding
+                    // every empty base query is exactly what keeps that judgment unreachable: the
+                    // workload report has original-only/variant-only empty pinned at 0 across every
+                    // run so far. Sampled rather than always-on because ~78% of base queries probe
+                    // empty and most of those checks will compare two empty results and learn nothing.
+                    if (EMPTY_BASE_CHECK_PERCENT <= 0
+                            || Randomly.getNotCachedInteger(0, 100) >= EMPTY_BASE_CHECK_PERCENT) {
+                        throw new IgnoreMeException();
+                    }
+                    // No wrapper shape here: a shape over an empty base filters to empty anyway and
+                    // would only cost a probe. The plain comparison is what carries the signal.
+                    EGraphSqlCoverage.recordEmptyBaseCheck();
+                    EGraphSqlCoverage.recordCheck();
+                    EGraphSqlCoverage.analyzeWhere(rewriteQuery);
+                    return new EGraphMetamorphicOracle.GeneratedQuery(rewriteQuery, rewriteQuery, variant -> variant,
+                            "RANDOM_GENERATED_1_3_EMPTY_BASE");
                 }
                 EGraphSqlCoverage.recordWrapperShape(baseQuery.shapeName);
                 EGraphCoverageContext originalContext = createEGraphCoverageContext(state, targetTables,
@@ -349,6 +446,371 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
     private static final int MAX_CORPUS_ATTEMPTS_PER_CHECK = Integer
             .getInteger("sqlite3.egraph.corpus.maxAttemptsPerCheck", 2);
     private static final Set<String> BAD_CORPUS_INPUTS = ConcurrentHashMap.newKeySet();
+    /**
+     * Diagnostic switch: only run corpus cases that bring their own setup, i.e. replay the corpus CREATE/INSERT
+     * verbatim. With -Dsqlite3.egraph.corpusSetupOnly=true everything that would instead run against data SQLancer
+     * produced on its own is refused - the random-generation path entirely, and corpus cases without setup
+     * statements. Used to measure how much of the workload survives on corpus-provided data alone.
+     */
+    private static final boolean CORPUS_SETUP_ONLY = Boolean.getBoolean("sqlite3.egraph.corpusSetupOnly");
+
+    private static final boolean RTREE_TARGETS = !"false"
+            .equalsIgnoreCase(System.getProperty("egraph.rtreeTargets", "true"));
+
+    /**
+     * Per table: -1 when it is not backed by the rtree module, otherwise how many coordinate columns
+     * it declares - everything between the id column and the first auxiliary ("+name") column. Read
+     * from sqlite_master rather than guessed from the name, because SQLancer's "rt0" convention is
+     * not something this oracle should depend on. Cached per name so the lookup does not repeat on
+     * every check.
+     */
+    private static final Map<String, Integer> RTREE_TABLE_CACHE = new ConcurrentHashMap<>();
+
+    private static boolean isRtreeTable(SQLite3GlobalState state, SQLite3Table table) {
+        return rtreeCoordinateColumns(state, table) >= 0;
+    }
+
+    /**
+     * Coordinate columns of an R-Tree table, or -1 if the table is not one. Only these columns can
+     * carry a constraint the module consumes, so this is what {@link #generateRtreePushdownWhere}
+     * builds its terms from.
+     */
+    private static int rtreeCoordinateColumns(SQLite3GlobalState state, SQLite3Table table) {
+        if (!RTREE_TARGETS || table == null || !table.isVirtual()) {
+            return -1;
+        }
+        Integer cached = RTREE_TABLE_CACHE.get(table.getName());
+        if (cached != null) {
+            return cached;
+        }
+        int coordinates = -1;
+        try {
+            SQLQueryAdapter q = new SQLQueryAdapter(
+                    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '" + table.getName() + "'");
+            try (SQLancerResultSet rs = q.executeAndGet(state)) {
+                if (rs != null && rs.next()) {
+                    String sql = rs.getString(1);
+                    if (sql != null) {
+                        String normalized = sql.toLowerCase(java.util.Locale.ROOT);
+                        // rtree or rtree_i32; no other module name contains it
+                        if (normalized.contains("rtree")) {
+                            coordinates = countRtreeCoordinateColumns(sql, table.getColumns().size());
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            coordinates = -1;
+        }
+        RTREE_TABLE_CACHE.put(table.getName(), coordinates);
+        return coordinates;
+    }
+
+    /**
+     * Counts the coordinate columns in a {@code CREATE VIRTUAL TABLE ... USING rtree(...)}: the
+     * module arguments after the id column, up to the first auxiliary one. Getting this wrong is not
+     * dangerous - a constraint on an auxiliary column is simply not consumed and stays a post-filter
+     * - so the parse is deliberately simple and clamps to what the schema actually has.
+     */
+    private static int countRtreeCoordinateColumns(String createStatement, int nrSchemaColumns) {
+        int open = createStatement.indexOf('(');
+        int close = createStatement.lastIndexOf(')');
+        if (open < 0 || close < open) {
+            return 0;
+        }
+        String[] args = createStatement.substring(open + 1, close).split(",");
+        int coordinates = 0;
+        for (int i = 1; i < args.length; i++) {   // argument 0 is the id column
+            if (args[i].trim().startsWith("+")) {
+                break;
+            }
+            coordinates++;
+        }
+        coordinates = Math.max(0, Math.min(coordinates, nrSchemaColumns - 1));
+        return coordinates - coordinates % 2;   // coordinates always come in (min, max) pairs
+    }
+
+    // Percentage of R-Tree-targeted base queries whose WHERE is assembled from push-down-eligible
+    // constraint terms instead of being taken from the free-form expression generator. 0 restores
+    // the previous behaviour; the remainder still goes through the random generator, which keeps
+    // the predicate shapes the rule set is normally exercised on in the mix.
+    private static final int RTREE_PUSHDOWN_PERCENT = Integer
+            .parseInt(System.getProperty("egraph.rtreePushdownPercent", "80"));
+
+    /**
+     * Percentage of non-virtual base queries whose WHERE is built as {@code indexedColumn <op>
+     * constant}, with an index guaranteed on that column.
+     *
+     * <p>
+     * The point is not the comparison itself but what the rewrite rules can then do with it:
+     * {@code allowedOp} (sqlite3.c) only index-matches TK_EQ..TK_GE, so a term the rules wrap in
+     * NOT - which is exactly what gt-to-not-lteq and its five siblings produce - stops being
+     * index-usable and compiles to a full scan while the original compiles to an index seek. That is
+     * a strategy-level difference on a plain table, where the rest of the rule set only manages to
+     * reorder the same opcodes. Measured by hand: {@code c1 > 1} gives SEARCH USING INDEX, and
+     * {@code NOT (c1 <= 1)} gives SCAN, both returning the same 28 rows.
+     * </p>
+     *
+     * <p>
+     * 0 restores the previous always-random behaviour. Left at 0 until an A/B says otherwise.
+     * </p>
+     */
+    private static final int INDEXED_PREDICATE_PERCENT = Integer
+            .parseInt(System.getProperty("egraph.indexedPredicatePercent", "0"));
+
+    /** A column with an index on it plus a constant taken from that column, so the term matches rows. */
+    private static final class IndexedPredicate {
+        private final SQLite3Column column;
+        private final SQLite3Constant constant;
+
+        IndexedPredicate(SQLite3Column column, SQLite3Constant constant) {
+            this.column = column;
+            this.constant = constant;
+        }
+    }
+
+    /**
+     * Creates the index and samples the constant, or returns null when this table has nothing
+     * usable - no named column, or no row holding an integer, real or text value. Callers fall back
+     * to the random predicate path, which is also what keeps the in-run control arm populated.
+     */
+    private static IndexedPredicate prepareIndexedPredicate(SQLite3GlobalState state, SQLite3Table table) {
+        if (state == null || table == null || table.isVirtual() || !hasUsableIdentifier(table.getName())) {
+            return null;
+        }
+        List<SQLite3Column> candidates = table.getColumns().stream()
+                .filter(SQLite3OracleFactory::hasUsableIdentifier)
+                .collect(java.util.stream.Collectors.toList());
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        SQLite3Column column = Randomly.fromList(candidates);
+        String indexName = quoteIdentifier(
+                "egraph_ixp_" + sanitizeIdentifierPart(table.getName()) + "_" + sanitizeIdentifierPart(column.getName()));
+        // IF NOT EXISTS, so this is a no-op after the first check that picks this column. A column
+        // that cannot be indexed (a generated column in some SQLite builds) fails here and the
+        // sampled constant would still produce a full scan on both sides, so give up instead.
+        if (!executeContextStatement(state, "CREATE INDEX IF NOT EXISTS " + indexName + " ON "
+                + quoteIdentifier(table.getName()) + "(" + quoteIdentifier(column.getName()) + ")", true)) {
+            return null;
+        }
+        SQLite3Constant constant = sampleColumnConstant(state, table, column);
+        return constant == null ? null : new IndexedPredicate(column, constant);
+    }
+
+    /**
+     * Reads one value out of the column so the comparison is satisfiable by construction. Blobs and
+     * NULLs are filtered out in SQL rather than here: a blob literal has to round-trip through
+     * x'..' to stay a blob, and a NULL comparison is rejected by EGraphPredicateFilter anyway.
+     */
+    private static SQLite3Constant sampleColumnConstant(SQLite3GlobalState state, SQLite3Table table,
+            SQLite3Column column) {
+        String columnName = quoteIdentifier(column.getName());
+        String sql = "SELECT typeof(" + columnName + "), " + columnName + " FROM "
+                + quoteIdentifier(table.getName()) + " WHERE typeof(" + columnName
+                + ") IN ('integer', 'real', 'text') ORDER BY random() LIMIT 1";
+        try (SQLancerResultSet rs = new SQLQueryAdapter(sql, false).executeAndGet(state, false)) {
+            if (rs == null || !rs.next()) {
+                return null;
+            }
+            String type = rs.getString(1);
+            String value = rs.getString(2);
+            if (type == null || value == null) {
+                return null;
+            }
+            switch (type) {
+            case "integer":
+                return SQLite3Constant.createIntConstant(Long.parseLong(value));
+            case "real":
+                return SQLite3Constant.createRealConstant(Double.parseDouble(value));
+            default:
+                return SQLite3Constant.createTextConstant(value);
+            }
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Builds {@code column <op> constant}. Deliberately plain: the NOT wrapping that costs the term
+     * its index usability is what the rule set produces on its own, so the base query has to hand it
+     * a term that is index-usable to begin with.
+     */
+    private static SQLite3Expression generateIndexedConstantWhere(IndexedPredicate prepared,
+            SQLite3ExpressionGenerator gen) {
+        SQLite3Expression columnRef = new SQLite3ColumnName(prepared.column, null);
+        BinaryComparisonOperator operator = Randomly.fromOptions(BinaryComparisonOperator.EQUALS,
+                BinaryComparisonOperator.NOT_EQUALS, BinaryComparisonOperator.SMALLER,
+                BinaryComparisonOperator.SMALLER_EQUALS, BinaryComparisonOperator.GREATER,
+                BinaryComparisonOperator.GREATER_EQUALS);
+        SQLite3Expression predicate = new BinaryComparisonOperation(columnRef, prepared.constant, operator);
+        if (Randomly.getBooleanWithRatherLowProbability()) {
+            // Two terms on the same column: the optimiser then has to pick which one drives the
+            // index seek and which stays a post-filter, and the rules can move that boundary.
+            predicate = new Sqlite3BinaryOperation(predicate,
+                    new BinaryComparisonOperation(new SQLite3ColumnName(prepared.column, null), prepared.constant,
+                            Randomly.fromOptions(BinaryComparisonOperator.SMALLER_EQUALS,
+                                    BinaryComparisonOperator.GREATER_EQUALS,
+                                    BinaryComparisonOperator.NOT_EQUALS)),
+                    BinaryOperator.AND);
+        }
+        if (Randomly.getBooleanWithRatherLowProbability()) {
+            // A term the index cannot serve, so "index seek plus post-filter" stays in the mix.
+            predicate = new Sqlite3BinaryOperation(predicate, gen.generateBooleanExpression(), BinaryOperator.AND);
+        }
+        return predicate;
+    }
+
+    // Bound for the "constraint that matches everything" terms. Kept below 1e7 so Double.toString
+    // does not switch to exponent notation, which the rewrite server's parser has no need to see.
+    private static final double RTREE_WIDE_BOUND = 1000000.0;
+
+    /**
+     * Builds a WHERE clause over an R-Tree table's coordinate columns that the module can actually
+     * consume.
+     *
+     * <p>
+     * The module only takes terms of the form {@code coordinateColumn <op> constant} that sit
+     * directly in the top-level AND/OR structure; anything else stays a post-filter over a full
+     * scan. The free-form generator practically never emits that shape - it builds arbitrary
+     * arithmetic trees and column-vs-column comparisons - which is why R-Tree targets produced a
+     * single plan for 94% of their checks while regular tables managed more than one for 17%. With
+     * constraint terms the rewrites become visible: the same predicate compiles to a full scan, a
+     * one-constraint scan, a two-constraint scan in either order, or a MULTI-INDEX OR over two
+     * separate R-Tree scans, and all of them have to return the same rows.
+     * </p>
+     */
+    private static SQLite3Expression generateRtreePushdownWhere(SQLite3Table table, int coordinateColumns,
+            SQLite3ExpressionGenerator gen) {
+        List<SQLite3Column> columns = table.getColumns();
+        int nrPairs = coordinateColumns / 2;
+        int pair = (int) Randomly.getNotCachedInteger(0, nrPairs);
+        double pivot = rtreePivot();
+        SQLite3Expression predicate;
+        switch ((int) Randomly.getNotCachedInteger(0, nrPairs >= 2 ? 6 : 5)) {
+            case 0: {
+                // Point containment - the canonical R-Tree query, and the shape that produced six
+                // distinct plans across its rewrites when this was measured by hand.
+                predicate = rtreeAnd(
+                        rtreeConstraint(columns, pair, false, pivot, BinaryComparisonOperator.SMALLER_EQUALS),
+                        rtreeConstraint(columns, pair, true, pivot, BinaryComparisonOperator.GREATER_EQUALS));
+                break;
+            }
+            case 1: {
+                // Interval overlap: the same two constraints, but with a different bound on each.
+                double lower = pivot - Randomly.getNotCachedInteger(1, 9);
+                double upper = pivot + Randomly.getNotCachedInteger(1, 9);
+                predicate = rtreeAnd(
+                        rtreeConstraint(columns, pair, false, upper, BinaryComparisonOperator.SMALLER_EQUALS),
+                        rtreeConstraint(columns, pair, true, lower, BinaryComparisonOperator.GREATER_EQUALS));
+                break;
+            }
+            case 2: {
+                // Strict bounds. RTREE_LT and RTREE_GT are separate opcodes from RTREE_LE/RTREE_GE
+                // in the module's constraint program, and the rewrite rules move between them.
+                predicate = rtreeAnd(rtreeConstraint(columns, pair, false, pivot, BinaryComparisonOperator.SMALLER),
+                        rtreeConstraint(columns, pair, true, pivot, BinaryComparisonOperator.GREATER));
+                break;
+            }
+            case 3: {
+                // A single constraint, leaving the other coordinate to the post-filter.
+                predicate = Randomly.getBoolean()
+                        ? rtreeConstraint(columns, pair, false, pivot, BinaryComparisonOperator.SMALLER_EQUALS)
+                        : rtreeConstraint(columns, pair, true, pivot, BinaryComparisonOperator.GREATER_EQUALS);
+                break;
+            }
+            case 4: {
+                // Wide open: true for any row, so the check does not depend on where the data
+                // happens to sit, while the module still has two constraints to consume.
+                predicate = rtreeAnd(
+                        rtreeConstraint(columns, pair, false, RTREE_WIDE_BOUND,
+                                BinaryComparisonOperator.SMALLER_EQUALS),
+                        rtreeConstraint(columns, pair, true, -RTREE_WIDE_BOUND,
+                                BinaryComparisonOperator.GREATER_EQUALS));
+                break;
+            }
+            default: {
+                // Two pairs at once - four terms, which is where the order the module receives them
+                // in starts to matter.
+                int other = (pair + 1) % nrPairs;
+                predicate = rtreeAnd(
+                        rtreeAnd(rtreeConstraint(columns, pair, false, pivot,
+                                BinaryComparisonOperator.SMALLER_EQUALS),
+                                rtreeConstraint(columns, pair, true, pivot,
+                                        BinaryComparisonOperator.GREATER_EQUALS)),
+                        rtreeAnd(rtreeConstraint(columns, other, false, RTREE_WIDE_BOUND,
+                                BinaryComparisonOperator.SMALLER_EQUALS),
+                                rtreeConstraint(columns, other, true, -RTREE_WIDE_BOUND,
+                                        BinaryComparisonOperator.GREATER_EQUALS)));
+                break;
+            }
+        }
+        // An OR of two constraint lists is what SQLite turns into MULTI-INDEX OR: two independent
+        // R-Tree scans feeding a rowset merge, which a single AND chain never reaches.
+        if (Randomly.getBooleanWithRatherLowProbability()) {
+            double second = rtreePivot();
+            predicate = rtreeOr(predicate,
+                    rtreeAnd(rtreeConstraint(columns, pair, false, second, BinaryComparisonOperator.SMALLER_EQUALS),
+                            rtreeConstraint(columns, pair, true, second, BinaryComparisonOperator.GREATER_EQUALS)));
+        }
+        // A term the module cannot consume keeps the "constraint plus post-filter" path in the mix,
+        // and keeps some of the generator's own shapes in the R-Tree workload.
+        if (Randomly.getBooleanWithRatherLowProbability()) {
+            predicate = rtreeAnd(predicate, gen.generateBooleanExpression());
+        }
+        return predicate;
+    }
+
+    /**
+     * A value to constrain against. {@code SQLite3Provider#seedRtreeTable} fills the EGRAPH R-Tree
+     * with intervals inside [-20, 24], so pivots in that band keep containment queries non-empty on
+     * the one table the oracle can count on; the occasional far-out value exercises the path where
+     * the module consumes a constraint that then matches nothing.
+     */
+    private static double rtreePivot() {
+        if (Randomly.getBooleanWithSmallProbability()) {
+            return Randomly.getNotCachedInteger(-1000, 1001);
+        }
+        double base = Randomly.getNotCachedInteger(-20, 25);
+        return Randomly.getBoolean() ? base : base + 0.5;
+    }
+
+    /** Column {@code 1 + 2 * pair} is a pair's minimum, the one after it its maximum. */
+    private static SQLite3Expression rtreeCoordinate(List<SQLite3Column> columns, int pair, boolean upperBound) {
+        return new SQLite3ColumnName(columns.get(1 + 2 * pair + (upperBound ? 1 : 0)), null);
+    }
+
+    private static SQLite3Expression rtreeConstraint(List<SQLite3Column> columns, int pair, boolean upperBound,
+            double value, BinaryComparisonOperator operator) {
+        return new BinaryComparisonOperation(rtreeCoordinate(columns, pair, upperBound), rtreeLiteral(value),
+                operator);
+    }
+
+    /**
+     * Integer and real spellings of the same bound reach the module through different affinity
+     * handling, and rtree_i32 stores what rtree keeps as a float, so both are worth emitting.
+     */
+    private static SQLite3Expression rtreeLiteral(double value) {
+        if (value == Math.rint(value) && Randomly.getBoolean()) {
+            return SQLite3Constant.createIntConstant((long) value);
+        }
+        return SQLite3Constant.createRealConstant(value);
+    }
+
+    private static SQLite3Expression rtreeAnd(SQLite3Expression left, SQLite3Expression right) {
+        return new Sqlite3BinaryOperation(left, right, BinaryOperator.AND);
+    }
+
+    private static SQLite3Expression rtreeOr(SQLite3Expression left, SQLite3Expression right) {
+        return new Sqlite3BinaryOperation(left, right, BinaryOperator.OR);
+    }
+
+    // Percentage of empty-probe base queries that are checked anyway instead of discarded. 0 restores
+    // the previous always-discard behaviour. Default is a small sample so the single-side-empty
+    // judgment starts producing data without materially moving throughput.
+    private static final int EMPTY_BASE_CHECK_PERCENT = Integer
+            .getInteger("egraph.emptyBaseCheckPercent", 10);
+
     private static final boolean AUTO_RESEARCH_GUIDED_SHAPES = Boolean
             .parseBoolean(System.getProperty("sqlite3.egraph.autoResearchGuidedShapes", "true"));
     private static final String AUTO_RESEARCH_RESULTS = System.getProperty("sqlite3.egraph.autoResearchResults",
@@ -576,11 +1038,17 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         if (rewriteQuery == null || rewriteQuery.isBlank()) {
             throw new IgnoreMeException();
         }
+        if (!replayedCorpusSetup && CORPUS_SETUP_ONLY) {
+            EGraphSqlCoverage.trace("corpus-setup-only skip source=" + getCorpusSourceName(selectedInput)
+                    + " reason=no-setup-statements");
+            throw new IgnoreMeException();
+        }
         if (!replayedCorpusSetup) {
             SQLite3Provider.ensureEGraphRandomDatabase(state);
         }
         List<SQLite3Table> tables = state.getSchema().getDatabaseTables().stream()
-                .filter(t -> !t.isView() && !t.isVirtual() && !t.getColumns().isEmpty())
+                .filter(t -> !t.isView() && !t.isVirtual() && !t.getColumns().isEmpty()
+                        && t.getNrRows(state) > 0)
                 .collect(java.util.stream.Collectors.toList());
         if (tables.isEmpty()) {
             throw new IgnoreMeException();
@@ -592,9 +1060,6 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             if (EGRAPH_SELECT_ONLY_TEMPLATES) {
                 rewriteQuery = mapSelectOnlyCorpusQuery(rewriteQuery, targetTables);
             }
-            EGraphSqlCoverage.trace("corpus-random-data setup start query=" + shortenForTrace(rewriteQuery));
-            EGraphDataGenerator.setupDataForCorpusQuery(state, targetTables, rewriteQuery);
-            EGraphSqlCoverage.trace("corpus-random-data setup done query=" + shortenForTrace(rewriteQuery));
         }
         EGraphSqlCoverage.trace("corpus-base-nonempty-probe start source=" + getCorpusSourceName(selectedInput)
                 + " query=" + shortenForTrace(rewriteQuery));
@@ -629,11 +1094,11 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
     }
 
     private static EGraphBaseQuery buildEGraphBaseQuery(SQLite3Select select, SQLite3Expression whereCondition,
-            AbstractTables<SQLite3Table, SQLite3Column> targetTables) {
+            AbstractTables<SQLite3Table, SQLite3Column> targetTables, boolean rowOrderMustNotMatter) {
         List<SQLite3Column> columns = targetTables.getColumns().stream()
                 .filter(SQLite3OracleFactory::hasUsableIdentifier)
                 .collect(java.util.stream.Collectors.toList());
-        EGraphBaseQueryShape shape = chooseEGraphBaseQueryShape(columns);
+        EGraphBaseQueryShape shape = chooseEGraphBaseQueryShape(columns, rowOrderMustNotMatter);
         resetEGraphBaseQuery(select, whereCondition);
         switch (shape) {
             case COLUMN_PROJECTION:
@@ -672,9 +1137,16 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         select.setOffsetClause(null);
     }
 
-    private static EGraphBaseQueryShape chooseEGraphBaseQueryShape(List<SQLite3Column> columns) {
+    private static EGraphBaseQueryShape chooseEGraphBaseQueryShape(List<SQLite3Column> columns,
+            boolean rowOrderMustNotMatter) {
         if (!EGRAPH_BASE_SKELETONS || columns.isEmpty()) {
             return EGraphBaseQueryShape.PLAIN;
+        }
+        if (rowOrderMustNotMatter) {
+            // The three shapes whose result is a set: no LIMIT to pick different rows with, and no
+            // ORDER BY to switch the comparison to order-sensitive.
+            return Randomly.fromOptions(EGraphBaseQueryShape.PLAIN, EGraphBaseQueryShape.PLAIN,
+                    EGraphBaseQueryShape.COLUMN_PROJECTION, EGraphBaseQueryShape.DISTINCT_COLUMNS);
         }
         return Randomly.fromOptions(EGraphBaseQueryShape.PLAIN, EGraphBaseQueryShape.PLAIN,
                 EGraphBaseQueryShape.COLUMN_PROJECTION, EGraphBaseQueryShape.DISTINCT_COLUMNS,
@@ -1313,7 +1785,13 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 return "SELECT egraph_outer.* FROM (" + query + ") AS egraph_outer JOIN " + tableName
                         + " AS egraph_auto ON egraph_auto." + columnName + " = egraph_outer." + columnName;
             case CO_ROUTINE:
-                return "SELECT * FROM (" + query + " LIMIT -1) AS egraph_co ORDER BY 1";
+                // LIMIT -1 has to hang off a SELECT of its own. Appended directly to `query` it
+                // collides with the LIMIT the base-query generator already emits, producing
+                // "LIMIT 10 LIMIT -1" - a syntax error that aborted the whole check. The extra
+                // nesting keeps the intent: a LIMIT on a subquery is what stops the flattener and
+                // forces SQLite to run it as a co-routine.
+                return "SELECT * FROM (SELECT * FROM (" + query
+                        + ") AS egraph_co_inner LIMIT -1) AS egraph_co ORDER BY 1";
             case MULTI_INDEX_OR:
                 return "SELECT * FROM (" + query + ") AS egraph_outer WHERE egraph_outer." + columnName
                         + " = 0 OR egraph_outer." + secondColumnName + " = 0";
@@ -1823,6 +2301,13 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
     private static void addMultiIndexOrIndexes(SQLite3GlobalState state, SQLite3Table table,
             SQLite3Column leftColumn, SQLite3Column rightColumn) throws Exception {
         if (!hasUsableIdentifier(table.getName()) || !hasUsableIdentifier(leftColumn) || !hasUsableIdentifier(rightColumn)) {
+            return;
+        }
+        if (table.isVirtual()) {
+            // CREATE INDEX is not allowed on a virtual table. Reachable since R-Tree tables became
+            // eligible base-query targets: the statement raised an unexpected AssertionError and
+            // aborted the whole database generation, which is why the R-Tree table was never
+            // actually queried in the first run after that change.
             return;
         }
         String tableName = quoteIdentifier(table.getName());
@@ -2414,6 +2899,10 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
     private static boolean setupAnalyzeIndexContext(SQLite3GlobalState state, SQLite3Table table,
             SQLite3Column column) {
         if (!hasUsableIdentifier(table.getName()) || !hasUsableIdentifier(column)) {
+            return false;
+        }
+        if (table.isVirtual()) {
+            // Same reason as addMultiIndexOrIndexes: no CREATE INDEX on virtual tables.
             return false;
         }
         String tableName = quoteIdentifier(table.getName());
