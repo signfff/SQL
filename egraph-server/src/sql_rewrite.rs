@@ -909,7 +909,72 @@ fn wrap_compound(expr: SqlExpr) -> SqlExpr {
 
 //  Rewrite rules
 
+/// The 12 comparison rules added on 2026-09-08 can be switched off with EGRAPH_EXTRA_RULES=0 so
+/// their effect on variant yield and latency can be A/B'd against the previous set in one binary.
+fn extra_rules_enabled() -> bool {
+    std::env::var("EGRAPH_EXTRA_RULES").map(|v| v != "0").unwrap_or(true)
+}
+
+/// Rule names to leave out, comma separated, from EGRAPH_DISABLE_RULES. Used for ablation runs:
+/// a rule that compiles to the same bytecode on both sides never makes a check fail, but it may
+/// still be the only path by which another rule's pattern becomes reachable, so "is this rule worth
+/// keeping" cannot be answered without turning it off and counting what is lost.
+fn disabled_rules() -> std::collections::HashSet<String> {
+    std::env::var("EGRAPH_DISABLE_RULES")
+        .ok()
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
+    let mut rules = make_base_rewrite_rules();
+    if extra_rules_enabled() {
+        rules.extend(make_extra_comparison_rules());
+    }
+    let off = disabled_rules();
+    if !off.is_empty() {
+        rules.retain(|r| !off.contains(r.name.as_str()));
+    }
+    rules
+}
+
+fn make_extra_comparison_rules() -> Vec<Rewrite<SqlLang, ()>> {
+    vec![
+        // Reverse of tight-eq / tight-noteq. These EXPAND (one comparison becomes two joined by
+        // and/or), which is the point: an equality seek and a two-sided range scan are different
+        // execution strategies for the same predicate, so unlike a pure shape change these reach
+        // code the original form never compiles to. Soundness is not a coercion question - both
+        // sides compare the same two operands under the same affinity rules, and under NULL both
+        // sides are NULL. Verified over an adversarial value grid (NULL / '' / 'abc' / '0' /
+        // signed zero / int64 boundaries / BLOB) before being enabled.
+        rewrite!("eq-to-tight"; "(= ?x ?y)" => "(and (>= ?x ?y) (<= ?x ?y))"),
+        rewrite!("noteq-to-lt-or-gt"; "(<> ?x ?y)" => "(or (< ?x ?y) (> ?x ?y))"),
+        // Non-strict comparison split into its strict and equal halves, both directions. The OR
+        // form is what gives SQLite's OR-optimization something to chew on.
+        rewrite!("lteq-to-lt-or-eq"; "(<= ?x ?y)" => "(or (< ?x ?y) (= ?x ?y))"),
+        rewrite!("gteq-to-gt-or-eq"; "(>= ?x ?y)" => "(or (> ?x ?y) (= ?x ?y))"),
+        rewrite!("lt-or-eq-to-lteq"; "(or (< ?x ?y) (= ?x ?y))" => "(<= ?x ?y)"),
+        rewrite!("gt-or-eq-to-gteq"; "(or (> ?x ?y) (= ?x ?y))" => "(>= ?x ?y)"),
+        // The not-* rules reversed, making the NOT-over-comparison relation bidirectional. Before
+        // this, an expression written as "c0 <> 5" could never reach the "NOT (c0 = 5)" spelling,
+        // so half of the reachable forms were unreachable from the generator's output. Same
+        // argument as de-morgan-*-rev: the NOT only wraps an already-boolean result, so no operand
+        // changes its coercion and NULL stays NULL on both sides.
+        rewrite!("eq-to-not-noteq"; "(= ?x ?y)" => "(not (<> ?x ?y))"),
+        rewrite!("noteq-to-not-eq"; "(<> ?x ?y)" => "(not (= ?x ?y))"),
+        rewrite!("gt-to-not-lteq"; "(> ?x ?y)" => "(not (<= ?x ?y))"),
+        rewrite!("lt-to-not-gteq"; "(< ?x ?y)" => "(not (>= ?x ?y))"),
+        rewrite!("gteq-to-not-lt"; "(>= ?x ?y)" => "(not (< ?x ?y))"),
+        rewrite!("lteq-to-not-gt"; "(<= ?x ?y)" => "(not (> ?x ?y))"),
+    ]
+}
+
+fn make_base_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
     vec![
         //  Boolean algebra ?commutativity
         rewrite!("and-comm"; "(and ?x ?y)" => "(and ?y ?x)"),
@@ -940,9 +1005,15 @@ fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // Reverse of distributive expansion ?pulls out common factor.
         rewrite!("factor-and"; "(or (and ?x ?y) (and ?x ?z))" => "(and ?x (or ?y ?z))"),
         rewrite!("factor-or"; "(and (or ?x ?y) (or ?x ?z))" => "(or ?x (and ?y ?z))"),
-        // Distributivity expansion disabled ?causes exponential e-graph explosion.
-        // rewrite!("and-dist-or"; "(and ?x (or ?y ?z))" => "(or (and ?x ?y) (and ?x ?z))"),
-        // rewrite!("or-dist-and"; "(or ?x (and ?y ?z))" => "(and (or ?x ?y) (or ?x ?z))"),
+        // RE-ENABLED 2026-09-08. The disabling reason was e-graph explosion, not unsoundness -
+        // both hold in Kleene three-valued logic and were re-verified on the adversarial value
+        // grid. Explosion is now bounded by EGRAPH_NODE_LIMIT / EGRAPH_TIME_LIMIT_MS (400 / 60ms),
+        // so the cost is "other rules fire less", not a hang. Worth it because (x AND y) OR
+        // (x AND z) is the entry point to SQLite's OR-optimization: the MULTI_INDEX_OR wrapper
+        // shape has been reporting ~100% lost in every workload report, and this is the only rule
+        // that can feed it.
+        rewrite!("and-dist-or"; "(and ?x (or ?y ?z))" => "(or (and ?x ?y) (and ?x ?z))"),
+        rewrite!("or-dist-and"; "(or ?x (and ?y ?z))" => "(and (or ?x ?y) (or ?x ?z))"),
         //  Comparison symmetry
         rewrite!("eq-sym"; "(= ?x ?y)" => "(= ?y ?x)"),
         rewrite!("noteq-sym"; "(<> ?x ?y)" => "(<> ?y ?x)"),
@@ -957,11 +1028,25 @@ fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         rewrite!("not-lt"; "(not (< ?x ?y))" => "(>= ?x ?y)"),
         rewrite!("not-gteq"; "(not (>= ?x ?y))" => "(< ?x ?y)"),
         rewrite!("not-lteq"; "(not (<= ?x ?y))" => "(> ?x ?y)"),
+        // The six rules above, reversed - they make the NOT-over-comparison relation bidirectional.
+        // Before this, an expression written as "c0 <> 5" could never reach the "NOT (c0 = 5)"
+        // spelling, so half of the reachable forms were unreachable from the generator's output.
+        // Same argument as de-morgan-*-rev: the NOT only wraps an already-boolean result, so no
+        // operand changes its coercion, and NULL stays NULL on both sides.
         //  NOT over BETWEEN
         rewrite!("not-between"; "(not (between ?x ?lo ?hi))" => "(or (< ?x ?lo) (> ?x ?hi))"),
         //  Comparison chain compression
         rewrite!("tight-eq"; "(and (>= ?x ?y) (<= ?x ?y))" => "(= ?x ?y)"),
         rewrite!("tight-noteq"; "(or (< ?x ?y) (> ?x ?y))" => "(<> ?x ?y)"),
+        // Reverse of tight-eq / tight-noteq.  These EXPAND (one comparison becomes two joined by
+        // and/or), which is the point: an equality seek and a two-sided range scan are different
+        // execution strategies for the same predicate, so unlike a pure shape change these reach
+        // code the original form never compiles to.  Soundness is not a coercion question - both
+        // sides compare the same two operands with the same affinity rules, and under NULL both
+        // sides are NULL.  Verified over the adversarial value grid (NULL / '' / 'abc' / '0' /
+        // signed zero / int64 boundaries / BLOB) before being enabled.
+        // Non-strict comparison split into its strict and equal halves, both directions.  The OR
+        // form is what gives SQLite's OR-optimization something to chew on.
         //  Arithmetic
         rewrite!("add-comm"; "(+ ?x ?y)" => "(+ ?y ?x)"),
         rewrite!("mul-comm"; "(* ?x ?y)" => "(* ?y ?x)"),
@@ -995,11 +1080,14 @@ fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // safe to rewrite.
         rewrite!("isunknown-to-isnull"; "(isunknown ?x)" => "(isnull ?x)"),
         rewrite!("isnotunknown-to-isnotnull"; "(isnotunknown ?x)" => "(isnotnull ?x)"),
-        // Reverse direction.  The comment above already establishes that IS UNKNOWN
-        // and IS NULL are equivalent in every SQL context; this direction adds a
-        // spelling the generator never produces on its own.
-        rewrite!("isnull-to-isunknown"; "(isnull ?x)" => "(isunknown ?x)"),
-        rewrite!("isnotnull-to-isnotunknown"; "(isnotnull ?x)" => "(isnotunknown ?x)"),
+        // The reverse direction is DISABLED: SQLite does not implement IS UNKNOWN / IS NOT UNKNOWN.
+        // It parses UNKNOWN as an identifier, so every such variant dies with
+        // "no such column: UNKNOWN". The earlier claim that the two spellings are "equivalent in
+        // every SQL context" holds for standard SQL, not for the DBMS actually under test. Measured
+        // cost before removal: 3101 of 3133 variant-only errors in a 300s run, and because a variant
+        // error aborts the whole check, ~16% of all checks (3133 / 19615) were silently discarded.
+        // rewrite!("isnull-to-isunknown"; "(isnull ?x)" => "(isunknown ?x)"),
+        // rewrite!("isnotnull-to-isnotunknown"; "(isnotnull ?x)" => "(isnotunknown ?x)"),
         //  IS NULL / IS NOT NULL expansion ?DISABLED
         // These rules let egg's compositional extraction merge ISNULL/NOTNULL
         // e-classes with unrelated expressions (e.g. string literals), producing
@@ -1015,7 +1103,18 @@ fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // In SQLite, "x BETWEEN lo AND hi" and "x>=lo AND x<=hi" are NOT equivalent
         // when operands have mixed types (INT/TEXT/BLOB).  The separate comparisons
         // change type coercion order, producing false positives (BUG #1, #2, #4).
-        // rewrite!("between-decomp"; "(between ?x ?lo ?hi)" => "(and (>= ?x ?lo) (<= ?x ?hi))"),
+        // RE-ENABLED 2026-09-08. The false positives above (BUG #1/#2/#4) did not reproduce on
+        // SQLite 3.53.4: 6 declared affinities (INTEGER/TEXT/REAL/BLOB/NUMERIC/none) x 13 column
+        // values (NULL / '' / text / numeric text / padded numeric text / 0 / ints / floats / BLOB)
+        // x 169 (lo,hi) pairs = 13182 combinations, zero counterexamples. SQLite's own docs state
+        // the two forms are equivalent, the only difference being that BETWEEN evaluates x once.
+        // That single residual risk needs a non-deterministic ?x, which egraphMode cannot produce
+        // (ExpressionType.FUNCTION is removed) and the corpus filter rejects. Kept because it is
+        // one of the few rules that actually changes the compiled program - measured: index range
+        // scan becomes two OR'd range scans. If BUG #1/#2/#4-shaped false positives return, the
+        // original attribution was right and this line goes back to being commented out.
+        rewrite!("between-decomp"; "(between ?x ?lo ?hi)" => "(and (>= ?x ?lo) (<= ?x ?hi))"),
+        rewrite!("between-compose"; "(and (>= ?x ?lo) (<= ?x ?hi))" => "(between ?x ?lo ?hi)"),
         //  String concatenation ?associative, not commutative
         rewrite!("concat-assoc-l"; "(concat (concat ?x ?y) ?z)" => "(concat ?x (concat ?y ?z))"),
         rewrite!("concat-assoc-r"; "(concat ?x (concat ?y ?z))" => "(concat (concat ?x ?y) ?z)"),
@@ -1047,12 +1146,25 @@ fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
 
 //  E-graph operations
 
+/// Saturation budget. Tunable because the expanding comparison rules (eq-to-tight and friends)
+/// form a growth loop with their contracting inverses: every iteration adds nodes, so the runner
+/// always runs to one of these limits rather than reaching saturation. Variants per *second* is
+/// what determines detection rate, not variants per query, so these defaults are set from the
+/// sweep in EGRAPH.md rather than left at egg's generous ones.
+fn node_limit() -> usize {
+    std::env::var("EGRAPH_NODE_LIMIT").ok().and_then(|v| v.parse().ok()).unwrap_or(200)
+}
+
+fn time_limit_ms() -> u64 {
+    std::env::var("EGRAPH_TIME_LIMIT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(40)
+}
+
 pub fn perform_rewrites(expr: &RecExpr<SqlLang>, iter_limit: usize) -> (EGraph<SqlLang, ()>, Id) {
     let rules = make_rewrite_rules();
     let runner = Runner::default()
         .with_iter_limit(iter_limit)
-        .with_node_limit(5000)
-        .with_time_limit(std::time::Duration::from_secs(3))
+        .with_node_limit(node_limit())
+        .with_time_limit(std::time::Duration::from_millis(time_limit_ms()))
         .with_expr(expr)
         .run(&rules);
     let root = runner.roots[0];
@@ -1077,7 +1189,9 @@ pub fn extract_variants(
         if result.len() >= max_variants {
             break;
         }
-        let expr = extract_randomized(egraph, root);
+        let Some(expr) = extract_randomized(egraph, root) else {
+            continue;
+        };
         let key = format!("{}", expr);
         if seen.insert(key) {
             result.push(expr);
@@ -1087,12 +1201,17 @@ pub fn extract_variants(
     result
 }
 
-fn extract_randomized(egraph: &EGraph<SqlLang, ()>, root: Id) -> RecExpr<SqlLang> {
+/// Returns None when the walk ran into an e-class cycle it could not break without inventing a
+/// node. Previously such a walk fabricated `Symbol(0)`, which is not a neutral placeholder: the
+/// symbol table resolves id 0 to whatever the first symbol happens to be, so a cycle silently
+/// turned into a real column reference and the extracted expression no longer meant anything
+/// related to the input. Abandoning the walk costs nothing - extract_variants already retries.
+fn extract_randomized(egraph: &EGraph<SqlLang, ()>, root: Id) -> Option<RecExpr<SqlLang>> {
     let mut rng = rand::thread_rng();
     let mut rec = RecExpr::default();
     let mut path: HashSet<Id> = HashSet::new();
-    extract_randomized_impl(egraph, root, &mut rec, &mut path, &mut rng);
-    rec
+    extract_randomized_impl(egraph, root, &mut rec, &mut path, &mut rng)?;
+    Some(rec)
 }
 
 fn extract_randomized_impl(
@@ -1101,16 +1220,17 @@ fn extract_randomized_impl(
     rec: &mut RecExpr<SqlLang>,
     path: &mut HashSet<Id>,
     rng: &mut impl rand::Rng,
-) -> Id {
-    // Cycle detection: if we've seen this e-class before, pick a leaf node to break cycle
+) -> Option<Id> {
+    // Cycle detection. A childless node in the cycling e-class is a safe stand-in: sound rules make
+    // every member of an e-class equivalent, so the leaf means the same as the cycle it replaces.
+    // With no such leaf there is nothing safe to emit, so the walk is abandoned.
     if path.contains(&id) {
         for node in &egraph[id].nodes {
             if node.children().is_empty() {
-                return add_node(rec, node);
+                return Some(add_node(rec, node));
             }
         }
-        // No leaf found, create a dummy symbol
-        return rec.add(SqlLang::Symbol(0));
+        return None;
     }
 
     path.insert(id);
@@ -1118,16 +1238,21 @@ fn extract_randomized_impl(
     let idx = rng.gen_range(0..nodes.len());
     let node = &nodes[idx];
 
-    let child_ids: Vec<Id> = node
-        .children()
-        .iter()
-        .map(|&child_id| extract_randomized_impl(egraph, child_id, rec, path, rng))
-        .collect();
+    let mut child_ids: Vec<Id> = Vec::with_capacity(node.children().len());
+    for &child_id in node.children() {
+        match extract_randomized_impl(egraph, child_id, rec, path, rng) {
+            Some(child) => child_ids.push(child),
+            None => {
+                path.remove(&id);
+                return None;
+            }
+        }
+    }
 
     path.remove(&id);
 
     let new_node = make_node(node, &child_ids);
-    rec.add(new_node)
+    Some(rec.add(new_node))
 }
 
 fn make_node(template: &SqlLang, child_ids: &[Id]) -> SqlLang {
@@ -1751,9 +1876,48 @@ const SQLITE_SAMPLES: usize = 500;
 
 /// Edge-case values that are always included in every validation table to
 /// catch e-graph compositional mismatches (e.g. NOT(IsFalse(NOT(x))) vs
-/// NOT(IsFalse(x)) ?these differ for all non-null values, but random
+/// NOT(IsFalse(x)) - these differ for all non-null values, but random
 /// sampling might miss the critical NULL vs. non-NULL contrast).
-const FORCED_VALUES: &[&str] = &["NULL", "0", "1", "-1", "NULL", "0", "1"];
+///
+/// The int64 and 2^53 entries are not decoration. i64::MIN was reachable only through the random
+/// path (EDGE_VALUES at 8% per column, 1-in-11 to pick it), so over 500 samples it was missed
+/// about 2.6% of the time - and that is exactly how a `sub-to-add` + `add-assoc` variant escaped
+/// into a 300s run and produced the one false positive on 2026-09-08:
+///
+///     original  (c0 - c0) + (c0 >= c0)        = 0 + 1              = 1     (true)
+///     variant   ((-c0) + (c0 >= c0)) + c0     = (9.22e18 + 1) + c0 = 0.0   (false)
+///     because   -(-9223372036854775808) overflows int64 and becomes REAL, losing precision
+///
+/// Forcing the boundaries makes that deterministic instead of a 1-in-40 escape, and it guards
+/// every future arithmetic rule for free rather than requiring each to be audited by hand.
+const FORCED_VALUES: &[&str] = &[
+    "NULL",
+    "0",
+    "1",
+    "-1",
+    // int64 boundaries: negation / addition / multiplication silently fall back to REAL here
+    "-9223372036854775808",
+    "9223372036854775807",
+    "-9223372036854775807",
+    "4611686018427387904", // 2^62 - doubling overflows
+    // REAL/INTEGER precision boundary: beyond 2^53 a double can no longer represent every integer
+    "9007199254740993",
+    "-9007199254740993",
+    // signed zero and the REAL/INTEGER divide
+    "0.0",
+    "-0.0",
+    // affinity edges: TEXT that looks numeric, TEXT that does not, and BLOBs
+    "''",
+    "'0'",
+    "'abc'",
+    "x''",
+    "x'00'",
+];
+
+/// Boundary values drawn independently per column, so a mismatch that needs *different* extreme
+/// values in different columns is reachable. FORCED_VALUES fills every column of a row with the
+/// same value, which cannot express that.
+const BOUNDARY_COMBINATION_ROWS: usize = 24;
 
 /// Walk a SqlExpr tree recursively and collect every column identifier
 /// (both qualified, e.g. `t0.c0`, and unqualified, e.g. `c0`).
@@ -1912,6 +2076,20 @@ fn validate_with_sqlite(
             .map(|_| forced.to_string())
             .collect::<Vec<_>>();
         insert_values.push(format!("({})", vals.join(", ")));
+    }
+
+    // Boundary values drawn independently per column. The loop above puts the same value in every
+    // column, which cannot expose a mismatch that needs, say, i64::MIN in one column and a numeric
+    // TEXT in another.
+    if cols_sorted.len() > 1 {
+        use rand::Rng as _;
+        for _ in 0..BOUNDARY_COMBINATION_ROWS {
+            let vals: Vec<String> = cols_sorted
+                .iter()
+                .map(|_| FORCED_VALUES[rng.gen_range(0..FORCED_VALUES.len())].to_string())
+                .collect();
+            insert_values.push(format!("({})", vals.join(", ")));
+        }
     }
 
     let col_names = cols_sorted
