@@ -108,6 +108,14 @@ public class EGraphSqlCoverage {
     static final Map<String, AtomicInteger> targetTableKinds = new ConcurrentHashMap<>();
     static final Map<String, AtomicInteger> targetTableKindUsable = new ConcurrentHashMap<>();
     private static final ThreadLocal<String> LAST_TARGET_KIND = new ThreadLocal<>();
+    /**
+     * Label for a check that never recorded a target table kind, which is every check replayed from
+     * a corpus: those take the createCorpusGeneratedQuery path and never choose a target table.
+     * Without it the plan histogram attributed them to whichever arm the last generated check
+     * happened to use, and since corpora supply roughly 70% of a long run's checks, both arms were
+     * mostly made of queries that never belonged to either.
+     */
+    private static final ThreadLocal<String> LAST_QUERY_SOURCE = new ThreadLocal<>();
 
     // How many DISTINCT execution plans the original plus its variants produced within one check.
     // This is the direct measure of whether a rewrite is worth anything: if every variant of a
@@ -259,6 +267,11 @@ public class EGraphSqlCoverage {
             return;
         }
         String kind = LAST_TARGET_KIND.get();
+        // Cleared per check, so the next one cannot inherit this label.
+        LAST_TARGET_KIND.remove();
+        if (kind == null) {
+            kind = LAST_QUERY_SOURCE.get();
+        }
         String bucket = (kind == null ? "UNKNOWN" : kind) + " / " + bucketOf(plans.size());
         planDistinctHistogram.computeIfAbsent(bucket, k -> new AtomicInteger()).incrementAndGet();
     }
@@ -355,6 +368,7 @@ public class EGraphSqlCoverage {
         if (sourceName == null || sourceName.isBlank()) {
             return;
         }
+        LAST_QUERY_SOURCE.set(sourceName);
         querySourceHits.computeIfAbsent(sourceName, ignored -> new AtomicInteger()).incrementAndGet();
         statsFor(sourceName);
     }

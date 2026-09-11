@@ -139,7 +139,17 @@ Write-Host "powershell -ExecutionPolicy Bypass -File .\coverage\sqlite\finish-lo
 
 $javaExe = (Get-Command java.exe -ErrorAction Stop).Source
 $javaArgs = @()
-foreach ($p in $ExtraJavaProps) { if (-not [string]::IsNullOrWhiteSpace($p)) { $javaArgs += $p } }
+# Split on commas as well as across array elements. powershell.exe -File does not turn
+# `-ExtraJavaProps 'a','b'` into an array - it hands over the single string "a,b" - and a -D property
+# glued to the next one is not rejected by the JVM, it silently becomes part of the first property's
+# value. That cost a four-hour run: -Degraph.indexedPredicatePercent got the value
+# "70,-Degraph.rtreeTargets=false" and SQLancer died in a static initialiser having written nothing.
+foreach ($entry in $ExtraJavaProps) {
+    if ([string]::IsNullOrWhiteSpace($entry)) { continue }
+    foreach ($p in ($entry -split ",")) {
+        if (-not [string]::IsNullOrWhiteSpace($p)) { $javaArgs += $p.Trim() }
+    }
+}
 $javaArgs += @(
     "--enable-native-access=ALL-UNNAMED",
     "-Dsqlancer.statementTimeoutSeconds=15",
@@ -158,7 +168,7 @@ $javaArgs += @(
     # Pairs where the variant errored but the original ran. Not a bug report on its own - a deeper
     # rewritten tree can legitimately hit "expression tree is too large" - but the counter is what
     # surfaced the IS UNKNOWN and double-LIMIT defects, so keep capturing it.
-    "-Degraph.variantOnlyError.log=$runDirariant-only-errors.log",
+    ("-Degraph.variantOnlyError.log=" + (Join-Path $runDir "variant-only-errors.log")),
     # Reproducers for the strongest judgment the oracle has: one side empty, the other not.
     "-Degraph.singleSideEmptyLog=$runDir\single-side-empty-reproducers.sql",
     "-Dsqlite3.egraph.corpus.maxRowsPerTable=128",
