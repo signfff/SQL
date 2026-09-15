@@ -105,7 +105,16 @@ if (Test-Path -LiteralPath $replayFile) {
 
 Write-Host ("=== Phase 2/3: coverage measurement, started {0:HH:mm:ss} ===" -f (Get-Date))
 & powershell -ExecutionPolicy Bypass -File $finishScript -RunDir $runDir -ParallelWorkers $ParallelWorkers
+$coverageExit = $LASTEXITCODE
 $coverageEnd = Get-Date
+
+# $ErrorActionPreference does not apply to a child process's exit code, so a finish script that
+# died on an unhandled error used to look exactly like one that succeeded: on 20260915 two runs
+# died after 59 s, phase 3 carried on regardless, and the missing coverage report was only
+# noticed hours later. Say so here, and fail the run at the end so it cannot be missed.
+if ($coverageExit -ne 0) {
+    Write-Warning ("Phase 2 FAILED: finish-long-codecov.ps1 exited with {0}; no coverage report was produced." -f $coverageExit)
+}
 
 # Phase 3: rank candidate workloads by their coverage delta so the ranking can steer the next
 # round's wrapper shapes. Non-fatal on purpose - a four-hour capture plus a completed coverage
@@ -140,4 +149,8 @@ if (Test-Path -LiteralPath $report) {
     Write-Host "Full report:        $report"
     Write-Host "Uncovered analysis: $(Join-Path $runDir 'uncovered-code-report.txt')"
     Write-Host "Workload hints:     $(Join-Path $runDir 'workload-hints.txt')"
+}
+
+if ($coverageExit -ne 0) {
+    throw ("Coverage measurement failed: finish-long-codecov.ps1 exited with {0}. The capture and the auto-research output are still in {1}; rerun finish-long-codecov.ps1 -RunDir {1} once the cause is fixed." -f $coverageExit, $runDir)
 }

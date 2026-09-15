@@ -688,13 +688,17 @@ try {
     $gcdaRootDir = $resolvedBuildDir
     if ($replayCaseCount -gt 0) {
         $chunkDir = Join-Path $resolvedRunDir "replay-chunks"
-        $contextPrelude = @()
+        # Not named $contextPrelude: PowerShell variable names are case insensitive, so that is the
+        # same variable as the script's [switch] $ContextPrelude parameter, and assigning an array to
+        # it throws "cannot convert System.Object[] to SwitchParameter". The line runs
+        # unconditionally, so every coverage run died here before a single chunk was written.
+        $contextPreludeStatements = @()
         if ($ContextPrelude) {
-            $contextPrelude = @(Get-EGraphContextPrelude -ContextPath $contextReplayFile -SqliteExe $sqliteExe `
-                    -ScratchDir (Join-Path $resolvedRunDir "context-prelude"))
+            $contextPreludeStatements = @(Get-EGraphContextPrelude -ContextPath $contextReplayFile `
+                    -SqliteExe $sqliteExe -ScratchDir (Join-Path $resolvedRunDir "context-prelude"))
         }
         $chunks = @(Write-EGraphReplayChunks -SourcePath $replaySource -ChunkDir $chunkDir `
-                -CasesPerChunk $ReplayChunkCases -ContextPrelude $contextPrelude)
+                -CasesPerChunk $ReplayChunkCases -ContextPrelude $contextPreludeStatements)
         $replayChunkCount = $chunks.Count
         $gcovToolExe = Join-Path (Split-Path -Parent $gcovExe) "gcov-tool.exe"
         $gcdaWorkerDirs = New-Object System.Collections.Generic.List[string]
