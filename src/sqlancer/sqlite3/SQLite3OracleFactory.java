@@ -421,7 +421,14 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         FTS3_TOKENIZE_TABLE_CONTEXT,
         FTS5_TOMBSTONE_CONTEXT,
         FTS5_TOKENIZER_VARIANT_CONTEXT,
-        SQL_SYNTAX_BATTERY_CONTEXT
+        SQL_SYNTAX_BATTERY_CONTEXT,
+        // Built-ins that the SQLancer expression generator never emits, so their
+        // implementations had never been entered: unistrFunc and the percentile
+        // extension. Same battery rules as above - fixed literals only.
+        COLD_FUNCTION_BATTERY_CONTEXT,
+        // INSTEAD OF triggers and ALTER TABLE ... DROP CONSTRAINT. Both are DDL,
+        // so they can only live in the setup; the wrapper just reads the probe.
+        COLD_DDL_TRIGGER_CONTEXT
     }
 
     private enum EGraphBaseQueryShape {
@@ -863,7 +870,9 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 EGraphCoverageShape.FTS4_MERGE_LCS_CONTEXT, EGraphCoverageShape.FTS3_TOKENIZE_TABLE_CONTEXT,
                 EGraphCoverageShape.FTS5_TOMBSTONE_CONTEXT,
                 EGraphCoverageShape.FTS5_TOKENIZER_VARIANT_CONTEXT,
-                EGraphCoverageShape.SQL_SYNTAX_BATTERY_CONTEXT);
+                EGraphCoverageShape.SQL_SYNTAX_BATTERY_CONTEXT,
+                EGraphCoverageShape.COLD_FUNCTION_BATTERY_CONTEXT,
+                EGraphCoverageShape.COLD_DDL_TRIGGER_CONTEXT);
     }
 
     private static EGraphCoverageShape chooseAutoResearchShape() {
@@ -1621,7 +1630,9 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 EGraphCoverageShape.FTS4_MERGE_LCS_CONTEXT, EGraphCoverageShape.FTS3_TOKENIZE_TABLE_CONTEXT,
                 EGraphCoverageShape.FTS5_TOMBSTONE_CONTEXT,
                 EGraphCoverageShape.FTS5_TOKENIZER_VARIANT_CONTEXT,
-                EGraphCoverageShape.SQL_SYNTAX_BATTERY_CONTEXT);
+                EGraphCoverageShape.SQL_SYNTAX_BATTERY_CONTEXT,
+                EGraphCoverageShape.COLD_FUNCTION_BATTERY_CONTEXT,
+                EGraphCoverageShape.COLD_DDL_TRIGGER_CONTEXT);
     }
 
     private static EGraphCoverageShape chooseEGraphExecutionCoverageShape(EGraphCoverageShape inputShape) {
@@ -1752,6 +1763,8 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             case FTS5_TOMBSTONE_CONTEXT:
             case FTS5_TOKENIZER_VARIANT_CONTEXT:
             case SQL_SYNTAX_BATTERY_CONTEXT:
+            case COLD_FUNCTION_BATTERY_CONTEXT:
+            case COLD_DDL_TRIGGER_CONTEXT:
                 return originalShape;
             default:
                 throw new AssertionError(originalShape);
@@ -2291,6 +2304,60 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 return "SELECT * FROM (" + query
                         + ") AS egraph_multiselect_q WHERE EXISTS (SELECT 1 FROM egraph_multiselect_probe "
                         + "WHERE v >= 0 LIMIT 1)";
+            case COLD_FUNCTION_BATTERY_CONTEXT:
+                // unistr and the percentile extension are compiled in but nothing in
+                // the generator ever calls them. Every aggregate sits in a scalar
+                // subquery over a literal VALUES list, never beside egraph_cf.*: a
+                // bare column next to an aggregate makes SQLite pick an arbitrary
+                // row, and the original and the variant pick different ones as soon
+                // as their plans differ - a mismatch with no bug behind it.
+                // The escapes are written as backslash sequences that reach SQLite
+                // as-is, which is what exercises unistr's decoder; spelling them as
+                // Java character escapes instead would put raw non-ASCII bytes into
+                // the corpus and the replay script for no extra coverage. hex()
+                // keeps the compared values ASCII as well.
+                return "SELECT egraph_cf.*, "
+                        + "hex(unistr('\\u00e9\\u4e2dabc')) AS egraph_cf_unistr, "
+                        + "hex(unistr('\\U0001f600')) AS egraph_cf_unistr_hi, "
+                        + "unistr('a\\\\b') AS egraph_cf_unistr_bs, "
+                        + "unistr(x'4142') AS egraph_cf_unistr_blob, "
+                        + "unistr(NULL) AS egraph_cf_unistr_null, "
+                        + "unistr_quote('a''b') AS egraph_cf_uq_text, "
+                        + "unistr_quote(x'00ff') AS egraph_cf_uq_blob, "
+                        + "unistr_quote(NULL) AS egraph_cf_uq_null, "
+                        + "unistr_quote(1.5) AS egraph_cf_uq_real, "
+                        + "unistr_quote(7) AS egraph_cf_uq_int, "
+                        // char(9, 10, 65) rather than the escape sequences: a real
+                        // newline in the query text would split the line the replay
+                        // writer emits, and unistr_quote is what has to produce the
+                        // escaped form anyway.
+                        + "unistr_quote(char(9, 10, 65)) AS egraph_cf_uq_ctrl, "
+                        + "(SELECT median(column1) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_median, "
+                        + "(SELECT median(column1) FROM (VALUES(1),(NULL),(3))) AS egraph_cf_median_null, "
+                        + "(SELECT percentile(column1, 25) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_p25, "
+                        + "(SELECT percentile(column1, 0) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_p0, "
+                        + "(SELECT percentile(column1, 100) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_p100, "
+                        + "(SELECT percentile_cont(column1, 0.5) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_pc, "
+                        + "(SELECT percentile_disc(column1, 0.5) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_pd, "
+                        // The window form goes through percentInverse, which the
+                        // plain aggregate form never reaches. The ORDER BY is inside
+                        // a scalar subquery over a literal VALUES list, so it cannot
+                        // make the compared query order-sensitive.
+                        + "(SELECT group_concat(egraph_cf_w) FROM (SELECT percentile_cont(column1, 0.5) OVER "
+                        + "(ORDER BY column1 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS egraph_cf_w "
+                        + "FROM (VALUES(1),(2),(3),(10)))) AS egraph_cf_pc_window "
+                        + "FROM (" + query + ") AS egraph_cf";
+            case COLD_DDL_TRIGGER_CONTEXT:
+                // The DDL that this shape exists for ran in the setup. What is left
+                // for the wrapper is to read the probe back, so a broken INSTEAD OF
+                // trigger or a DROP CONSTRAINT that rewrote the table wrong shows up
+                // as a wrong value instead of passing silently.
+                return "SELECT egraph_cold_q.*, "
+                        + "(SELECT count(*) FROM egraph_cold_view) AS egraph_cold_rows, "
+                        + "(SELECT sum(v.a) FROM egraph_cold_view AS v WHERE v.a > 0) AS egraph_cold_sum, "
+                        + "(SELECT count(*) FROM sqlite_master WHERE type = 'trigger' "
+                        + "AND tbl_name = 'egraph_cold_view') AS egraph_cold_triggers "
+                        + "FROM (" + query + ") AS egraph_cold_q";
             case PLAIN:
                 return query;
             default:
@@ -2402,6 +2469,11 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 return setupFts5TokenizerVariantContext(state);
             case SQL_SYNTAX_BATTERY_CONTEXT:
                 return setupSqlSyntaxBatteryContext(state);
+            case COLD_FUNCTION_BATTERY_CONTEXT:
+                // Pure wrapper: the built-ins need no schema of their own.
+                return true;
+            case COLD_DDL_TRIGGER_CONTEXT:
+                return setupColdDdlTriggerContext(state);
             case JOIN_OPTIMIZER_CONTEXT:
                 return setupJoinOptimizerContext(state);
             case ALTER_FK_STRESS_CONTEXT:
@@ -2661,6 +2733,62 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 "PRAGMA shrink_memory", "PRAGMA optimize" }) {
             executeContextStatement(state, pragma, false);
         }
+        return ok;
+    }
+
+    private static boolean setupColdDdlTriggerContext(SQLite3GlobalState state) {
+        // Two forms the generator never emits. INSTEAD OF is its own grammar rule
+        // (trigger_time ::= INSTEAD OF), so the CREATE alone lights up the parser
+        // and the DML below lights up the execution path. DROP CONSTRAINT is a
+        // 125-line function that had never been entered.
+        //
+        // Dropping and re-creating rather than CREATE IF NOT EXISTS: ALTER TABLE ...
+        // DROP CONSTRAINT removes the constraint for good, so a refreshed context
+        // has to rebuild the table or there is nothing left to drop the second time.
+        // Every statement is fixed text and the net row state is the same after each
+        // refresh, so the corpus delta encoder sees no change to re-serialize.
+        executeContextStatement(state, "DROP VIEW IF EXISTS egraph_cold_view", true);
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_cold_ck", true);
+        boolean ok = executeContextStatement(state,
+                // Two named CHECK constraints: one gets dropped below, the other
+                // stays so the table still carries a constraint at query time.
+                // UNIQUE and FOREIGN KEY constraints cannot be dropped at all
+                // ("constraint may not be dropped"), so only CHECK reaches the
+                // success path.
+                "CREATE TABLE egraph_cold_ck(id INTEGER PRIMARY KEY, a INTEGER, "
+                        + "CONSTRAINT egraph_cold_c_pos CHECK(a > -100), "
+                        + "CONSTRAINT egraph_cold_c_hi CHECK(a < 1000))",
+                true);
+        ok &= executeContextStatement(state,
+                "INSERT INTO egraph_cold_ck(id, a) VALUES (1, 10), (2, 20), (3, 30)", false);
+        ok &= executeContextStatement(state,
+                "CREATE VIEW egraph_cold_view AS SELECT id, a FROM egraph_cold_ck", true);
+        ok &= executeContextStatement(state,
+                "CREATE TRIGGER egraph_cold_view_ii INSTEAD OF INSERT ON egraph_cold_view "
+                        + "BEGIN INSERT INTO egraph_cold_ck(id, a) VALUES (NEW.id, NEW.a); END",
+                true);
+        ok &= executeContextStatement(state,
+                // FOR EACH ROW and a WHEN clause are separate grammar rules again.
+                "CREATE TRIGGER egraph_cold_view_iu INSTEAD OF UPDATE OF a ON egraph_cold_view FOR EACH ROW "
+                        + "WHEN NEW.a > 0 BEGIN UPDATE egraph_cold_ck SET a = NEW.a WHERE id = OLD.id; END",
+                true);
+        ok &= executeContextStatement(state,
+                "CREATE TRIGGER egraph_cold_view_id INSTEAD OF DELETE ON egraph_cold_view "
+                        + "BEGIN DELETE FROM egraph_cold_ck WHERE id = OLD.id; END",
+                true);
+        if (!ok) {
+            return false;
+        }
+        // Insert, update and delete through the view. Row 4 is added and removed
+        // again so the table ends in the same state every refresh; the replay
+        // rewrites the INSERT to INSERT OR IGNORE, which an INSTEAD OF trigger
+        // accepts unchanged.
+        executeContextStatement(state, "INSERT INTO egraph_cold_view(id, a) VALUES (4, 40)", false);
+        executeContextStatement(state, "UPDATE egraph_cold_view SET a = 41 WHERE id = 4", false);
+        executeContextStatement(state, "DELETE FROM egraph_cold_view WHERE id = 4", false);
+        // Last, so the view and the triggers are already in place when the table is
+        // rewritten. They survive it: the triggers hang off the view, not the table.
+        executeContextStatement(state, "ALTER TABLE egraph_cold_ck DROP CONSTRAINT egraph_cold_c_pos", true);
         return ok;
     }
 
