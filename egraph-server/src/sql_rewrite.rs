@@ -1099,6 +1099,30 @@ fn make_base_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // rewrite!("isnotnull-expand"; "(isnotnull ?x)" => "(not (isnull ?x))"),
         rewrite!("not-isnull"; "(not (isnull ?x))" => "(isnotnull ?x)"),
         rewrite!("not-isnotnull"; "(not (isnotnull ?x))" => "(isnull ?x)"),
+        //  IS NULL / IS NOT NULL expansion into the IS TRUE / IS FALSE family
+        // These do what isnull-expand above was meant to do, without its failure mode. The
+        // difference is the shape of the right-hand side: it is built only from isXXX nodes joined
+        // by and/or, so the operand ?x never appears as a bare value. isnull-expand put (isnull ?x)
+        // into the not(...) family, and double-neg merges not(not(?y)) with ?y, so a boolean test
+        // and a plain value ended up in one e-class - which is how "t0.c0 NOTNULL" came out as
+        // "NOT(NOT(t0.c0))" (Bug #12637, wrong when c0=0). There is no path from these rules to a
+        // bare operand, so that merge cannot happen.
+        //
+        // Meaning: a value that is neither TRUE nor FALSE can only be NULL, and vice versa.
+        // Verified over the adversarial value grid - 19 literals (NULL / 0 / 1 / -1 / 0.0 /
+        // signed zero / '' / '0' / 'abc' / ' 1' / x'' / x'00' / int64 bounds) plus 6 declared
+        // affinities x 4 rows - with zero counterexamples.
+        //
+        // They earn their place by changing the compiled program, not just the text: measured on a
+        // 5000-row table with an index on c0 and 1% NULLs, "c0 IS NULL" compiles to
+        // SEARCH USING INDEX i0 (c0=?) while the expansion compiles to SCAN, both returning 50 rows.
+        // An index seek and a full scan have to agree, and if they do not, that is the bug.
+        //
+        // Only these two are enabled. The rest of the family (isnottrue -> or(isfalse, isnull) and
+        // its three siblings) verified clean too, but they close a cycle with these two, and the
+        // node budget is 200 - they go in one at a time, watching e-graph size and variant quality.
+        rewrite!("isnull-to-boolpair"; "(isnull ?x)" => "(and (isnottrue ?x) (isnotfalse ?x))"),
+        rewrite!("isnotnull-to-boolpair"; "(isnotnull ?x)" => "(or (istrue ?x) (isfalse ?x))"),
         //  BETWEEN decomposition ?DISABLED
         // In SQLite, "x BETWEEN lo AND hi" and "x>=lo AND x<=hi" are NOT equivalent
         // when operands have mixed types (INT/TEXT/BLOB).  The separate comparisons
