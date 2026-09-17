@@ -36,6 +36,8 @@ import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation.BinaryCo
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3ColumnName;
 import sqlancer.sqlite3.ast.SQLite3Expression.Sqlite3BinaryOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.Sqlite3BinaryOperation.BinaryOperator;
+import sqlancer.sqlite3.ast.SQLite3Function;
+import sqlancer.sqlite3.ast.SQLite3Function.ComputableFunction;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3OrderingTerm;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3OrderingTerm.Ordering;
 import sqlancer.sqlite3.ast.SQLite3Select;
@@ -168,11 +170,19 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         && Randomly.getNotCachedInteger(0, 100) < INDEXED_PREDICATE_PERCENT
                                 ? prepareIndexedPredicate(state, chosen)
                                 : null;
+                // Tried only when the indexed-constant path did not claim this check, so the two
+                // never fight over the WHERE and each keeps its own control arm in the histogram.
+                PartialIndexPredicate partialIndexPredicate = indexedPredicate == null && !chosen.isVirtual()
+                        && PARTIAL_INDEX_PERCENT > 0
+                        && Randomly.getNotCachedInteger(0, 100) < PARTIAL_INDEX_PERCENT
+                                ? preparePartialIndexPredicate(state, chosen)
+                                : null;
                 // The paths are reported apart because the plan histogram buckets by exactly this
                 // string, and comparing them within one run is the whole point of the split.
                 EGraphSqlCoverage.recordTargetTableKind(chosen.isVirtual()
                         ? (rtreePushdown ? "RTREE_VIRTUAL_PUSHDOWN" : "RTREE_VIRTUAL_RANDOM")
-                        : (indexedPredicate != null ? "REGULAR_INDEXED_CONST" : "REGULAR_RANDOM"));
+                        : (indexedPredicate != null ? "REGULAR_INDEXED_CONST"
+                                : partialIndexPredicate != null ? "REGULAR_PARTIAL_INDEX" : "REGULAR_RANDOM"));
                 AbstractTables<SQLite3Table, SQLite3Column> targetTables = new AbstractTables<>(
                         java.util.Collections.singletonList(chosen));
 
@@ -189,6 +199,8 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         whereCondition = generateRtreePushdownWhere(chosen, coordinateColumns, configuredGen);
                     } else if (indexedPredicate != null) {
                         whereCondition = generateIndexedConstantWhere(indexedPredicate, configuredGen);
+                    } else if (partialIndexPredicate != null) {
+                        whereCondition = generatePartialIndexWhere(partialIndexPredicate, configuredGen);
                     } else {
                         whereCondition = configuredGen.generateBooleanExpression();
                     }
@@ -565,6 +577,45 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
     private static final int INDEXED_PREDICATE_PERCENT = Integer
             .parseInt(System.getProperty("egraph.indexedPredicatePercent", "0"));
 
+    /**
+     * Percentage of base queries whose WHERE is built around a partial index's own predicate.
+     *
+     * <p>
+     * SQLite only considers a partial index when the query's WHERE contains a conjunct that its
+     * {@code sqlite3ExprImpliesExpr()} can match against the index predicate, and that check is a
+     * conservative syntactic one. Measured on this build: {@code c0 = 7} matches, and so do
+     * {@code 7 = c0}, {@code t0.c0 = 7} and {@code (c0 = 7)}, but {@code c0 = 7.0}, {@code c0 = 3+4},
+     * {@code c0 BETWEEN 7 AND 7}, {@code c0 >= 7 AND c0 <= 7}, {@code NOT (c0 <> 7)} and
+     * {@code c0 IN (7)} all fall back to a full scan.
+     * </p>
+     *
+     * <p>
+     * SQLite3IndexGenerator already emits partial indexes for half of the indexes it creates, but it
+     * builds their predicate from an independent draw of the random expression generator, and the
+     * base query's WHERE is yet another independent draw. Two independent samples of that generator
+     * essentially never come out token-identical, so those partial indexes are created and then
+     * never enter a single query plan. Handing the base query the index's own predicate as a
+     * top-level conjunct is what puts them into the plan, and from there a rewrite that spells the
+     * conjunct differently loses the index while the original keeps it - the same divergence the
+     * indexed-constant path produces, one level deeper.
+     * </p>
+     *
+     * <p>
+     * 0 keeps the previous behaviour. Left at 0 until an A/B says otherwise.
+     * </p>
+     */
+    private static final int PARTIAL_INDEX_PERCENT = Integer
+            .parseInt(System.getProperty("egraph.partialIndexPercent", "0"));
+
+    /** A partial index plus the exact predicate tree it was created with. */
+    private static final class PartialIndexPredicate {
+        private final SQLite3Expression predicate;
+
+        PartialIndexPredicate(SQLite3Expression predicate) {
+            this.predicate = predicate;
+        }
+    }
+
     /** A column with an index on it plus a constant taken from that column, so the term matches rows. */
     private static final class IndexedPredicate {
         private final SQLite3Column column;
@@ -603,6 +654,86 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         }
         SQLite3Constant constant = sampleColumnConstant(state, table, column);
         return constant == null ? null : new IndexedPredicate(column, constant);
+    }
+
+    /**
+     * Creates a partial index and returns the predicate it was created with, or null when the table
+     * has nothing usable. Callers fall back to the random path, which keeps the in-run control arm
+     * populated.
+     */
+    private static PartialIndexPredicate preparePartialIndexPredicate(SQLite3GlobalState state, SQLite3Table table) {
+        if (state == null || table == null || table.isVirtual() || !hasUsableIdentifier(table.getName())) {
+            return null;
+        }
+        List<SQLite3Column> candidates = table.getColumns().stream()
+                .filter(SQLite3OracleFactory::hasUsableIdentifier)
+                .collect(java.util.stream.Collectors.toList());
+        if (candidates.isEmpty()) {
+            return null;
+        }
+        SQLite3Column predicateColumn = Randomly.fromList(candidates);
+        SQLite3Constant constant = sampleColumnConstant(state, table, predicateColumn);
+        if (constant == null) {
+            return null;
+        }
+        SQLite3Expression left = new SQLite3ColumnName(predicateColumn, null);
+        SQLite3Expression right = constant;
+        if (Randomly.getBoolean()) {
+            // Wrapping both sides in the same deterministic function keeps the predicate satisfiable
+            // by the sampled row while making the index predicate a shape the planner has to match
+            // structurally rather than as a bare column comparison - which is what the partial-index
+            // bugs on sqlite.org/bugs look like (a json_quote() call inside the index WHERE).
+            ComputableFunction function = Randomly.fromOptions(ComputableFunction.ABS, ComputableFunction.LOWER,
+                    ComputableFunction.UPPER, ComputableFunction.LIKELY, ComputableFunction.UNLIKELY);
+            left = new SQLite3Function(function, left);
+            right = new SQLite3Function(function, right);
+        }
+        SQLite3Expression predicate = new BinaryComparisonOperation(left, right,
+                BinaryComparisonOperator.EQUALS);
+        String predicateText = renderExpression(predicate);
+        if (predicateText == null || predicateText.isBlank()) {
+            return null;
+        }
+        SQLite3Column indexedColumn = Randomly.fromList(candidates);
+        // The predicate is part of the index name: two checks that sample different constants must
+        // not have IF NOT EXISTS silently reuse the first one's index, or the query would be built
+        // around a predicate that no existing index actually carries.
+        String indexName = quoteIdentifier("egraph_pix_" + sanitizeIdentifierPart(table.getName()) + "_"
+                + sanitizeIdentifierPart(indexedColumn.getName()) + "_"
+                + Integer.toHexString(predicateText.hashCode()));
+        if (!executeContextStatement(state,
+                "CREATE INDEX IF NOT EXISTS " + indexName + " ON " + quoteIdentifier(table.getName()) + "("
+                        + quoteIdentifier(indexedColumn.getName()) + ") WHERE " + predicateText,
+                true)) {
+            return null;
+        }
+        return new PartialIndexPredicate(predicate);
+    }
+
+    /** Renders an expression the same way the base query will, so the index predicate matches it. */
+    private static String renderExpression(SQLite3Expression expression) {
+        try {
+            SQLite3ToStringVisitor visitor = new SQLite3ToStringVisitor();
+            visitor.fullyQualifiedNames = false;
+            visitor.visit(expression);
+            return visitor.get();
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Builds {@code <indexPredicate> [AND <random>]}. The index predicate has to stay a top-level
+     * conjunct: measured, SQLite ignores the partial index as soon as the matching term sits under a
+     * NOT or inside an OR, so nesting it would silently put this path back on a full scan.
+     */
+    private static SQLite3Expression generatePartialIndexWhere(PartialIndexPredicate prepared,
+            SQLite3ExpressionGenerator gen) {
+        SQLite3Expression predicate = prepared.predicate;
+        if (Randomly.getBoolean()) {
+            predicate = new Sqlite3BinaryOperation(predicate, gen.generateBooleanExpression(), BinaryOperator.AND);
+        }
+        return predicate;
     }
 
     /**
