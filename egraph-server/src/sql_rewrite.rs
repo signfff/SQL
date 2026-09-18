@@ -620,6 +620,50 @@ fn sql_expr_to_recexpr_impl(
             sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql)
         }
 
+        // "x NOT IN (...)" is by definition "NOT (x IN (...))", so model it that way instead of
+        // leaving it as its own opaque atom. Symbols are deduplicated by their printed form, so the
+        // two spellings now share one Symbol and the e-graph knows they are each other's negation.
+        //
+        // This is the cheapest possible fix for a real gap: a scan of 30 predicate constructs found
+        // that IN / NOT IN / row-value IN produce zero variants, because everything except the
+        // handful of cases above falls through to make_symbol and the whole "x IN (...)" becomes one
+        // atom - and an atom has nothing for a rule to match on. Both spellings were separate atoms
+        // with no relation between them, so a check built on IN could not fail. Sharing the Symbol
+        // puts the existing boolean rules (de Morgan, double negation, AND/OR reassociation) to work
+        // on predicates built around IN.
+        //
+        // No new e-graph node, deliberately. The random-sampling validator already treats IN /
+        // EXISTS / subqueries as opaque *boolean* leaves and feeds them true/false/null; splitting
+        // IN into (in ?x ?set) would make ?set a scalar leaf instead, and a set randomly assigned a
+        // scalar value is not something the validator can reason about. Keeping IN whole preserves
+        // that check, and eval() needs no changes at all.
+        SqlExpr::InList {
+            expr: inner,
+            list,
+            negated: true,
+        } => {
+            let positive = SqlExpr::InList {
+                expr: inner.clone(),
+                list: list.clone(),
+                negated: false,
+            };
+            let sym = make_symbol(&positive, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::Not([sym]))
+        }
+        SqlExpr::InSubquery {
+            expr: inner,
+            subquery,
+            negated: true,
+        } => {
+            let positive = SqlExpr::InSubquery {
+                expr: inner.clone(),
+                subquery: subquery.clone(),
+                negated: false,
+            };
+            let sym = make_symbol(&positive, rec, symbols, counter, dedup, source_sql);
+            rec.add(SqlLang::Not([sym]))
+        }
+
         // Everything else becomes an opaque Symbol
         _ => make_symbol(expr, rec, symbols, counter, dedup, source_sql),
     }
