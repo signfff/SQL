@@ -36,6 +36,8 @@ import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation.BinaryCo
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3ColumnName;
 import sqlancer.sqlite3.ast.SQLite3Expression.Sqlite3BinaryOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.Sqlite3BinaryOperation.BinaryOperator;
+import sqlancer.sqlite3.ast.SQLite3Expression.Join.JoinType;
+import sqlancer.sqlite3.gen.SQLite3Common;
 import sqlancer.sqlite3.ast.SQLite3Function;
 import sqlancer.sqlite3.ast.SQLite3Function.ComputableFunction;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3OrderingTerm;
@@ -177,14 +179,44 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         && Randomly.getNotCachedInteger(0, 100) < PARTIAL_INDEX_PERCENT
                                 ? preparePartialIndexPredicate(state, chosen)
                                 : null;
+                // Multi-table base queries. Exclusive with the three paths above, which all build
+                // the WHERE around one table's index; here the predicate spans the joined tables
+                // instead. Virtual tables stay out - the R-Tree path has its own predicate shape.
+                List<SQLite3Table> joinTables = null;
+                if (indexedPredicate == null && partialIndexPredicate == null && !chosen.isVirtual()
+                        && JOIN_PERCENT > 0 && Randomly.getNotCachedInteger(0, 100) < JOIN_PERCENT) {
+                    // Virtual tables are allowed as the joined side. Excluding them left this path
+                    // dead: EGRAPH skips empty tables rather than filling them (see
+                    // requiresAllTablesToContainRows), so a generated database typically has just
+                    // one non-empty ordinary table plus the seeded R-Tree, and "the other table
+                    // must not be virtual" can then never be satisfied. Measured: the roll
+                    // succeeded 294 times in 45s and produced a join zero times.
+                    List<SQLite3Table> others = tables.stream()
+                            .filter(t -> t != chosen && !t.getColumns().isEmpty())
+                            .collect(java.util.stream.Collectors.toList());
+                    if (!others.isEmpty()) {
+                        List<SQLite3Table> picked = new ArrayList<>();
+                        picked.add(chosen);
+                        picked.add(Randomly.fromList(others));
+                        if (others.size() > 1 && Randomly.getBooleanWithRatherLowProbability()) {
+                            List<SQLite3Table> rest = others.stream().filter(t -> !picked.contains(t))
+                                    .collect(java.util.stream.Collectors.toList());
+                            if (!rest.isEmpty()) {
+                                picked.add(Randomly.fromList(rest));
+                            }
+                        }
+                        joinTables = picked;
+                    }
+                }
                 // The paths are reported apart because the plan histogram buckets by exactly this
                 // string, and comparing them within one run is the whole point of the split.
                 EGraphSqlCoverage.recordTargetTableKind(chosen.isVirtual()
                         ? (rtreePushdown ? "RTREE_VIRTUAL_PUSHDOWN" : "RTREE_VIRTUAL_RANDOM")
                         : (indexedPredicate != null ? "REGULAR_INDEXED_CONST"
-                                : partialIndexPredicate != null ? "REGULAR_PARTIAL_INDEX" : "REGULAR_RANDOM"));
+                                : partialIndexPredicate != null ? "REGULAR_PARTIAL_INDEX"
+                                        : joinTables != null ? "REGULAR_JOIN" : "REGULAR_RANDOM"));
                 AbstractTables<SQLite3Table, SQLite3Column> targetTables = new AbstractTables<>(
-                        java.util.Collections.singletonList(chosen));
+                        joinTables != null ? joinTables : java.util.Collections.singletonList(chosen));
 
                 SQLite3ExpressionGenerator configuredGen = gen.setEgraphMode().setTablesAndColumns(targetTables);
                 SQLite3Select select;
@@ -194,7 +226,33 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 int attempts = 0;
                 do {
                     select = configuredGen.generateSelect();
-                    select.setFromList(configuredGen.getTableRefs());
+                    if (joinTables != null) {
+                        // Same wiring TLP uses: getRandomJoinClauses removes the tables it joins
+                        // from the list, so what remains is the FROM list. Rebuilt on every retry
+                        // because the call mutates its argument.
+                        // Built here rather than through getRandomJoinClauses, which rolls twice
+                        // (Randomly.getBoolean(), then nrJoinClauses in [0, size)) and left 73% of
+                        // this path as plain single-table queries - measured 29 joins out of 108.
+                        // The type pool leans on the outer joins: RIGHT and FULL are what the recent
+                        // reports turn on, and unlike INNER they keep the result non-empty even when
+                        // the ON clause is unsatisfiable, so the non-empty probe discards far less.
+                        // NATURAL is excluded because it must not carry an ON clause.
+                        List<sqlancer.sqlite3.ast.SQLite3Expression.Join> joins = new ArrayList<>();
+                        for (int ji = 1; ji < joinTables.size(); ji++) {
+                            JoinType joinType = Randomly.fromOptions(JoinType.RIGHT, JoinType.FULL,
+                                    JoinType.RIGHT, JoinType.FULL, JoinType.OUTER, JoinType.INNER,
+                                    JoinType.CROSS);
+                            SQLite3Expression onClause = joinType == JoinType.CROSS ? null
+                                    : configuredGen.generateBooleanExpression();
+                            joins.add(new sqlancer.sqlite3.ast.SQLite3Expression.Join(joinTables.get(ji),
+                                    onClause, joinType));
+                        }
+                        select.setJoinClauses(joins);
+                        select.setFromList(SQLite3Common.getTableRefs(
+                                java.util.Collections.singletonList(joinTables.get(0)), state.getSchema()));
+                    } else {
+                        select.setFromList(configuredGen.getTableRefs());
+                    }
                     if (rtreePushdown) {
                         whereCondition = generateRtreePushdownWhere(chosen, coordinateColumns, configuredGen);
                     } else if (indexedPredicate != null) {
@@ -606,6 +664,32 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
      */
     private static final int PARTIAL_INDEX_PERCENT = Integer
             .parseInt(System.getProperty("egraph.partialIndexPercent", "0"));
+
+    /**
+     * Percentage of base queries that span more than one table.
+     *
+     * <p>
+     * The base query has always been a single table ({@code singletonList(chosen)}), while PQS,
+     * TLP and the random query synthesizer all call {@code getRandomJoinClauses}. Of 31 correctness
+     * reports filed on sqlite.org/bugs over the past month, seven turn on RIGHT or FULL JOIN -
+     * nested RIGHT JOIN returning an extra row, RIGHT JOIN with a UNIQUE INDEX, RIGHT JOIN filtered
+     * by a row-value IN, json_each under a RIGHT JOIN - and this oracle cannot express any of them.
+     * RIGHT and FULL JOIN arrived in 3.39, so they are in the window where a feature still has bugs.
+     * </p>
+     *
+     * <p>
+     * Measured before writing this: duplicate column names across joined tables are not a problem -
+     * SQLite disambiguates them ({@code c0,c1,c0:1,c1:1}) and all seven wrapper shapes accept the
+     * result. An INNER JOIN with an unsatisfiable ON does collapse to zero rows and gets dropped by
+     * the non-empty probe, but an outer join does not, which happens to make RIGHT JOIN the
+     * cheapest of these to reach.
+     * </p>
+     *
+     * <p>
+     * 0 keeps the previous single-table behaviour. Left at 0 until an A/B says otherwise.
+     * </p>
+     */
+    private static final int JOIN_PERCENT = Integer.parseInt(System.getProperty("egraph.joinPercent", "0"));
 
     /** A partial index plus the exact predicate tree it was created with. */
     private static final class PartialIndexPredicate {
