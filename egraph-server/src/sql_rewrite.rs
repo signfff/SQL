@@ -1118,6 +1118,12 @@ fn make_base_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // SEARCH USING INDEX i0 (c0=?) while the expansion compiles to SCAN, both returning 50 rows.
         // An index seek and a full scan have to agree, and if they do not, that is the bug.
         //
+        // In-run A/B on a corpus of six IS NULL / IS NOT NULL predicates over an 800-row table
+        // with indexes on two of the three columns, same data both arms, the two rules the only
+        // variable: multi-plan rate 0.4% (3 of 684) with them off, 53.4% (356 of 667) with them on.
+        // The control arm shows the other terms in those predicates (c1 > 900 and friends, on an
+        // unindexed column) contribute almost nothing, so the difference is these rules.
+        //
         // Only these two are enabled. The rest of the family (isnottrue -> or(isfalse, isnull) and
         // its three siblings) verified clean too, but they close a cycle with these two, and the
         // node budget is 200 - they go in one at a time, watching e-graph size and variant quality.
