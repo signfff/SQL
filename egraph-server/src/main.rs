@@ -168,6 +168,49 @@ fn generate_query_variants(
     }
 }
 
+/// sqlparser parses SQLite's `0xABC` integer literal as Value::HexStringLiteral, and prints it back
+/// as `X'ABC'` - a BLOB. The original query is rendered on the Java side and keeps `0x`, so the
+/// variant silently compares an integer against a blob and the oracle reports a mismatch that is
+/// not a bug. fix_hex_format already repairs this for expressions that enter the e-graph, but the
+/// rest of the statement - notably a JOIN's ON clause - goes through `to_string()` untouched.
+///
+/// Only hex digits that really appear as `0x...` in the source are restored, and only when the
+/// source does not also contain the same digits spelled as a blob literal, so a genuine `X'..'`
+/// is never rewritten.
+fn restore_integer_hex(rendered: &str, source_sql: &str) -> String {
+    if !rendered.contains("X'") {
+        return rendered.to_string();
+    }
+    let lower_src = source_sql.to_ascii_lowercase();
+    let mut out = String::with_capacity(rendered.len());
+    let bytes = rendered.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if (bytes[i] == b'X' || bytes[i] == b'x')
+            && i + 1 < bytes.len()
+            && bytes[i + 1] == b'\''
+            && (i == 0 || !bytes[i - 1].is_ascii_alphanumeric() && bytes[i - 1] != b'_')
+        {
+            if let Some(end) = rendered[i + 2..].find('\'') {
+                let digits = &rendered[i + 2..i + 2 + end];
+                if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_hexdigit()) {
+                    let lower = digits.to_ascii_lowercase();
+                    let as_int = format!("0x{}", lower);
+                    let as_blob = format!("x'{}'", lower);
+                    if lower_src.contains(&as_int) && !lower_src.contains(&as_blob) {
+                        out.push_str(&as_int);
+                        i = i + 2 + end + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
 fn generate_select_variants(
     query: &Query,
     select: &Select,
@@ -189,7 +232,7 @@ fn generate_select_variants(
             if let SetExpr::Select(variant_select) = &mut *variant_query.body {
                 variant_select.selection = Some(expr);
             }
-            let s = variant_query.to_string();
+            let s = restore_integer_hex(&variant_query.to_string(), source_sql);
             if s == original_str {
                 None
             } else {
