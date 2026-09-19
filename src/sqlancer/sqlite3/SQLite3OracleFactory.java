@@ -578,7 +578,11 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         if (!RTREE_TARGETS || table == null || !table.isVirtual()) {
             return -1;
         }
-        Integer cached = RTREE_TABLE_CACHE.get(table.getName());
+        // Keyed by name AND column count: generated databases reuse table names, so an "rt1" with
+        // five columns would otherwise hand its coordinate count to the next database's three-column
+        // "rt1" and make generateRtreePushdownWhere index past the end of the column list.
+        String cacheKey = table.getName() + "#" + table.getColumns().size();
+        Integer cached = RTREE_TABLE_CACHE.get(cacheKey);
         if (cached != null) {
             return cached;
         }
@@ -601,7 +605,7 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         } catch (Exception ignored) {
             coordinates = -1;
         }
-        RTREE_TABLE_CACHE.put(table.getName(), coordinates);
+        RTREE_TABLE_CACHE.put(cacheKey, coordinates);
         return coordinates;
     }
 
@@ -927,7 +931,9 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
     private static SQLite3Expression generateRtreePushdownWhere(SQLite3Table table, int coordinateColumns,
             SQLite3ExpressionGenerator gen) {
         List<SQLite3Column> columns = table.getColumns();
-        int nrPairs = coordinateColumns / 2;
+        // Never trust the count past what the table can actually supply: column 1 + 2 * pair + 1 has
+        // to exist, and a wrong count here aborts the whole test thread rather than one check.
+        int nrPairs = Math.min(coordinateColumns, columns.size() - 1) / 2;
         int pair = (int) Randomly.getNotCachedInteger(0, nrPairs);
         double pivot = rtreePivot();
         SQLite3Expression predicate;
