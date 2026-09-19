@@ -193,7 +193,17 @@ public final class SQLite3EGraphInputCorpus {
         if (normalized.matches(".*\\bSQLITE_(TEMP_)?(MASTER|SCHEMA|STAT1|STAT4)\\b.*")) {
             return "sqlite-internal-schema";
         }
-        String[] unsupportedTokens = {
+        // JOIN is rejected here because the base query used to be single-table. Since
+        // egraph.joinPercent the random path emits joins, so the corpus channel refusing them is
+        // inconsistent - and it blocks using any join-shaped bug report as a regression corpus.
+        // Opt-in for now: a corpus query spanning tables it did not create would fail to run.
+        String[] unsupportedTokens = Boolean.getBoolean("sqlite3.egraph.corpus.allowJoin")
+                ? new String[] {
+                        " WITH ", " MATCH ", " GROUP BY ", " HAVING ", " WINDOW ", " OVER ",
+                        " UNION ", " INTERSECT ", " EXCEPT ", " VALUES ", " INDEXED BY ", " RETURNING ",
+                        " PRAGMA ", " CREATE ", " INSERT ", " UPDATE ", " DELETE ", " DROP ", " ALTER ",
+                        " REINDEX ", " ANALYZE ", " VACUUM ", " TRIGGER " }
+                : new String[] {
                 " WITH ", " MATCH ", " JOIN ", " GROUP BY ", " HAVING ", " WINDOW ", " OVER ",
                 " UNION ", " INTERSECT ", " EXCEPT ", " VALUES ", " INDEXED BY ", " RETURNING ",
                 " PRAGMA ", " CREATE ", " INSERT ", " UPDATE ", " DELETE ", " DROP ", " ALTER ",
