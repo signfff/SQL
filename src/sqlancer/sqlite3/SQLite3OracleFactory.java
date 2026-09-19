@@ -149,7 +149,20 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         .collect(java.util.stream.Collectors.toList());
                 if (tables.isEmpty())
                     throw new IgnoreMeException();
-                SQLite3Table chosen = Randomly.fromList(tables);
+                // Pick the kind of table first, then one of that kind. With a single ordinary
+                // table this is identical to a uniform draw over the list (one of each kind), but
+                // once egraph.tables adds more ordinary tables a uniform draw would quietly cut the
+                // R-Tree's share from 1/2 to 1/4 - and the R-Tree pushdown arm is where 90% of all
+                // multi-plan checks come from, against 10% for joins and 6% for plain single-table
+                // queries. Measured without this: 5340 R-Tree checks fell to 4012 and total
+                // effective checks dropped 20%, with the join arm nowhere near making up for it.
+                List<SQLite3Table> virtualCandidates = tables.stream().filter(SQLite3Table::isVirtual)
+                        .collect(java.util.stream.Collectors.toList());
+                List<SQLite3Table> ordinaryCandidates = tables.stream().filter(t -> !t.isVirtual())
+                        .collect(java.util.stream.Collectors.toList());
+                SQLite3Table chosen = virtualCandidates.isEmpty() || ordinaryCandidates.isEmpty()
+                        ? Randomly.fromList(tables)
+                        : Randomly.fromList(Randomly.getBoolean() ? virtualCandidates : ordinaryCandidates);
                 // Which kind of table the base query targets. Without this the report cannot tell
                 // "R-Tree was never picked" from "R-Tree was picked but every check was discarded",
                 // and the first two runs after enabling R-Tree targets were unreadable for exactly
@@ -195,15 +208,24 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                             .filter(t -> t != chosen && !t.getColumns().isEmpty())
                             .collect(java.util.stream.Collectors.toList());
                     if (!others.isEmpty()) {
+                        // Ordinary tables first. Mixing them with the R-Tree in one pool meant the
+                        // joined side was the R-Tree 79% of the time, because a generated database
+                        // usually holds only one or two non-empty ordinary tables against its one
+                        // seeded R-Tree. The reports this path exists for join ordinary tables.
+                        List<SQLite3Table> ordinary = others.stream().filter(t -> !t.isVirtual())
+                                .collect(java.util.stream.Collectors.toList());
+                        List<SQLite3Table> pool = ordinary.isEmpty() ? others : ordinary;
                         List<SQLite3Table> picked = new ArrayList<>();
                         picked.add(chosen);
-                        picked.add(Randomly.fromList(others));
-                        if (others.size() > 1 && Randomly.getBooleanWithRatherLowProbability()) {
-                            List<SQLite3Table> rest = others.stream().filter(t -> !picked.contains(t))
-                                    .collect(java.util.stream.Collectors.toList());
-                            if (!rest.isEmpty()) {
-                                picked.add(Randomly.fromList(rest));
-                            }
+                        picked.add(Randomly.fromList(pool));
+                        // Take a third table whenever one is available. The nested RIGHT JOIN
+                        // report needs three, and getBooleanWithRatherLowProbability() left only
+                        // 3.9% of joins with more than two tables - measured, 1.0% with three
+                        // ordinary ones - so the extra tables were created and then not used.
+                        List<SQLite3Table> rest = pool.stream().filter(t -> !picked.contains(t))
+                                .collect(java.util.stream.Collectors.toList());
+                        if (!rest.isEmpty() && Randomly.getBoolean()) {
+                            picked.add(Randomly.fromList(rest));
                         }
                         joinTables = picked;
                     }

@@ -126,6 +126,29 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
     private static final boolean EGRAPH_RTREE_TARGETS = !"false"
             .equalsIgnoreCase(System.getProperty("egraph.rtreeTargets", "true"));
 
+    /**
+     * Ordinary tables EGRAPH creates, on top of the R-Tree when egraph.rtreeTargets is on.
+     *
+     * <p>
+     * 1 keeps the historical behaviour. Useful values are 3 and up, and only together with
+     * egraph.joinPercent: the reports this exists for need three tables joined in a nest, and a
+     * single extra table measurably bought nothing when tried on its own.
+     * </p>
+     */
+    private static final int EGRAPH_TABLES = Math.max(1,
+            Integer.parseInt(System.getProperty("egraph.tables", "1")));
+
+    /**
+     * Multiplier for the per-action budgets, which are totals across tables rather than per-table
+     * figures. Without it an extra table just makes every table likelier to end up empty.
+     */
+    private static int egraphTableScale(SQLite3GlobalState globalState) {
+        if (globalState.getDbmsSpecificOptions().oracles != SQLite3OracleFactory.EGRAPH) {
+            return 1;
+        }
+        return Math.max(1, EGRAPH_TABLES);
+    }
+
     private static final Action[] EGRAPH_ACTIONS = {
             Action.PRAGMA,
             Action.CREATE_INDEX,
@@ -197,9 +220,10 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
         case PRAGMA:
             return r.getInteger(0, 2);
         case CREATE_INDEX:
-            return r.getInteger(0, 2);
+            return r.getInteger(0, 2) * egraphTableScale(globalState);
         case INSERT:
-            return r.getInteger(1, Math.max(2, Math.min(6, globalState.getOptions().getMaxNumberInserts())));
+            return r.getInteger(1, Math.max(2, Math.min(6, globalState.getOptions().getMaxNumberInserts())))
+                    * egraphTableScale(globalState);
         case UPDATE:
             return r.getInteger(0, 2);
         case ANALYZE:
@@ -220,11 +244,18 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
             if (isEGraph && SQLite3EGraphInputCorpus.isConfigured(globalState.getDbmsSpecificOptions())) {
                 return;
             }
-            // EGRAPH always queries a single table: SQLite3OracleFactory picks one non-view,
-            // non-virtual, non-empty table and wraps it in a singleton AbstractTables. Additional
-            // tables would never appear in a query and would only split the INSERT/CREATE INDEX
-            // budget, making it more likely that the chosen table ends up empty.
-            int nrTablesToCreate = 1;
+            // That reasoning held while EGRAPH wrapped one table in a singleton AbstractTables.
+            // Since egraph.joinPercent the base query can span several tables, and the bugs that
+            // needs are real: a nested RIGHT JOIN report on sqlite.org/bugs returns a row that
+            // should not exist, and it stops reproducing if any one of its three tables, the
+            // nesting, or the RIGHT is removed. Verified in isolation that our own IS NULL rules
+            // rewrite that query's WHERE into a form where the bug does not fire, so the two sides
+            // disagree and the oracle would report it - the only thing missing is generating a
+            // query of that shape.
+            //
+            // The other half of the old comment still applies: INSERT and CREATE_INDEX budgets are
+            // totals across tables, so mapEGraphActions scales them by the table count.
+            int nrTablesToCreate = isEGraph ? EGRAPH_TABLES : 1;
             // With egraph.rtreeTargets on, EGRAPH also gets one R-Tree table so the oracle has
             // something whose predicates survive SQLite's front-end normalisation. See the comment
             // on the target-table filter in SQLite3OracleFactory for why R-Tree specifically.
@@ -286,6 +317,7 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
                         }
                     });
             se.executeStatements();
+
 
             SQLQueryAdapter query = SQLite3TransactionGenerator.generateCommit(globalState);
             globalState.executeStatement(query);
