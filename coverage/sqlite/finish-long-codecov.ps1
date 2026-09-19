@@ -1,7 +1,11 @@
 ﻿param(
     [string] $RunDir,
     [int] $ReplayChunkCases = 50,
-    [int] $ReplayChunkTimeoutSeconds = 120,
+    # 300, not 120: on the 20260915 capture 63 chunks hit the 120s limit, and a timeout is a total
+    # loss - Stop-Process -Force skips libgcov's exit hook so the chunk's gcda never lands. The
+    # slowest chunks are also the ones with the densest coverage, so it is not a random 6% loss.
+    # Measured alone and uncontended, chunk-000216 needs 158s; one worker would time out too.
+    [int] $ReplayChunkTimeoutSeconds = 300,
     [int] $ParallelWorkers = 4,
     [switch] $NoRawSqlancerReplay,
     # Prepends the self-contained part of the EGRAPH context setup to every chunk, so the probe
@@ -718,13 +722,19 @@ try {
         # private GCOV_PREFIX directory so parallel processes never race on one
         # sqlite3.gcda; gcov-tool merges the directories afterwards.
         $running = New-Object System.Collections.Generic.List[object]
+        # Slots are handed out from a pool rather than as chunkIndex % workerCount. The scheduler
+        # only caps how many run at once, so with a slow chunk still holding slot k the modulo
+        # would hand slot k to a new chunk as well - two live processes sharing one GCOV_PREFIX
+        # directory, both writing the same gcda on exit, counts silently lost.
+        $freeWorkerSlots = New-Object System.Collections.Generic.Stack[int]
+        for ($slot = $parallelWorkerCount - 1; $slot -ge 0; $slot--) { $freeWorkerSlots.Push($slot) }
         $nextChunkIndex = 0
         while ($true) {
             while ($nextChunkIndex -lt $replayChunkCount -and $running.Count -lt $parallelWorkerCount) {
                 $chunkIndex = $nextChunkIndex
                 $nextChunkIndex++
                 $chunk = $chunks[$chunkIndex]
-                $workerId = $chunkIndex % $parallelWorkerCount
+                $workerId = $freeWorkerSlots.Pop()
                 $chunkDb = Join-Path $chunkDir ("chunk-{0:D6}.db" -f $chunkIndex)
                 $chunkOut = Join-Path $chunkDir ("sqlite-replay.{0:D6}.out.log" -f $chunkIndex)
                 $chunkErr = Join-Path $chunkDir ("sqlite-replay.{0:D6}.err.log" -f $chunkIndex)
@@ -756,6 +766,7 @@ try {
                 $running.Add(@{
                         Process = $replayProcess
                         Index   = $chunkIndex
+                        Slot    = $workerId
                         Start   = Get-Date
                         Out     = $chunkOut
                         Err     = $chunkErr
@@ -809,6 +820,7 @@ try {
                         Write-Host ("Replay chunks: {0}/{1}, timed out: {2}, failed: {3}" -f `
                                 $replayChunksExecuted, $replayChunkCount, $replayChunksTimedOut, $replayChunksFailed)
                     }
+                    $freeWorkerSlots.Push($entry.Slot)
                     $running.RemoveAt($i)
                 }
             }

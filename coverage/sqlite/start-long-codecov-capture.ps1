@@ -88,17 +88,26 @@ $autoResearchCorpus = "D:\sqlancer\coverage\sqlite\auto-research-filtered-corpus
 if ($IncludeAutoResearchCorpus -and $NoAutoResearchCorpus) {
     throw "Use either -IncludeAutoResearchCorpus or -NoAutoResearchCorpus, not both."
 }
-$latestAutoResearch = Get-ChildItem -LiteralPath "D:\sqlancer\coverage\sqlite" -Directory |
-    Where-Object {
-        $_.Name -notlike "auto-research-smoke-*" -and
-        (Test-Path -LiteralPath (Join-Path $_.FullName "auto-research-results.csv"))
-    } |
+# finish-long-codecov.ps1 writes its auto research into "<run dir>\auto-research", one level below
+# the directories this used to scan, so the freshest results - the ones measured on the current
+# instrumented build - were invisible here and a months-old CSV kept winning on LastWriteTime.
+$autoResearchCandidates = New-Object System.Collections.Generic.List[object]
+foreach ($dir in (Get-ChildItem -LiteralPath "D:\sqlancer\coverage\sqlite" -Directory)) {
+    if ($dir.Name -like "auto-research-smoke-*") { continue }
+    foreach ($relative in @("auto-research-results.csv", "auto-research\auto-research-results.csv")) {
+        $candidate = Join-Path $dir.FullName $relative
+        if (Test-Path -LiteralPath $candidate) {
+            $autoResearchCandidates.Add((Get-Item -LiteralPath $candidate))
+        }
+    }
+}
+$latestAutoResearch = $autoResearchCandidates |
     Sort-Object LastWriteTime -Descending |
     Select-Object -First 1
 if ($null -eq $latestAutoResearch) {
     throw "Missing auto-research results under D:\sqlancer\coverage\sqlite"
 }
-$autoResearchResults = Join-Path $latestAutoResearch.FullName "auto-research-results.csv"
+$autoResearchResults = $latestAutoResearch.FullName
 if (-not (Test-Path -LiteralPath $autoResearchResults)) {
     throw "Missing auto-research results: $autoResearchResults"
 }
