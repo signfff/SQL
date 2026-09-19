@@ -541,9 +541,23 @@ fn sql_expr_to_recexpr_impl(
                 rec.add(SqlLang::Neg([child]))
             }
             UnaryOperator::Plus => {
-                // Unary plus is NOT identity in SQLite ?it forces numeric
-                // type coercion (e.g. (+ '123') = 123, but '123' is TEXT).
-                // Treat as opaque Symbol to prevent false simplifications.
+                // Unary plus must stay an opaque Symbol, but not for the reason first written here
+                // ("it forces numeric type coercion, (+ '123') = 123 but '123' is TEXT"). That part
+                // is wrong: +x returns its operand unchanged, value and typeof() both - checked
+                // over 14 literals including '123', '0123' and '  42  '.
+                //
+                // The real reason is affinity. A column reference carries its declared affinity
+                // into a comparison; +column is an expression and carries none, so the other side
+                // stops being converted. On a table t(i INTEGER) holding 123:
+                //     i = '123'    -> 1        (+i) = '123'  -> 0
+                //     i < '9'      -> 0        (+i) < '9'    -> 1
+                // Measured 2026-09-19 after enabling a uplus node and rules "?x -> (uplus ?x)" on
+                // comparison operands: the random arm's multi-plan rate rose 6.3% -> 9.1%, and it
+                // bought four false positives in three runs. Reverted.
+                //
+                // The lesson generalises: a rewrite being value-preserving is not enough for an
+                // e-graph, because an e-class is substitutable in every context - and the other
+                // side of a comparison is a context, just like NOT is.
                 make_symbol(expr, rec, symbols, counter, dedup, source_sql)
             }
             UnaryOperator::BitwiseNot => {
