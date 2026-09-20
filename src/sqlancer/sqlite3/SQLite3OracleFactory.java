@@ -2672,6 +2672,18 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + "AS egraph_cf_castint, "
                         + "CAST('1e5' AS REAL) + CAST('inf' AS REAL) + CAST('-0' AS REAL) AS egraph_cf_castreal, "
                         + "typeof(x'01') || typeof(1.0) || typeof(9223372036854775808) AS egraph_cf_types, "
+                        // printf conversions the workload never writes. The thousands separator and
+                        // the ordinal form are SQLite's own extensions, and each flag character is
+                        // a separate case in sqlite3_str_vappendf's parser.
+                        + "printf('%,d|%,d|%,.2f', 1234567, -1234567, 1234567.891) AS egraph_cf_thousands, "
+                        + "printf('%!d|%!d|%!d|%!d', 1, 2, 3, 11) AS egraph_cf_ordinal, "
+                        + "printf('%-10d|%-10s|%-10.3f', 42, 'ab', 1.5) AS egraph_cf_leftjust, "
+                        + "printf('% d|% i|% f', 42, -42, 1.5) AS egraph_cf_spaceflag, "
+                        + "printf('%010.4f|%#x|%#o', 1.5, 255, 8) AS egraph_cf_altform, "
+                        + "printf('%.0f|%.0e|%.20f', 2.5, 2.5, 1.0 / 3) AS egraph_cf_precision, "
+                        + "printf('%5.1s|%.0s|%c%c', 'abcdef', 'abc', 65, 97) AS egraph_cf_strprec, "
+                        + "printf('%1000d', 7) AS egraph_cf_widepad, "
+                        + "printf('%d %d %d', 1) AS egraph_cf_missingargs, "
                         + "(SELECT median(column1) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_median, "
                         + "(SELECT median(column1) FROM (VALUES(1),(NULL),(3))) AS egraph_cf_median_null, "
                         + "(SELECT percentile(column1, 25) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_p25, "
@@ -3194,6 +3206,53 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 true);
         executeContextStatement(state, "INSERT INTO egraph_syn_defer(c, d) VALUES(1, 1)", false);
         executeContextStatement(state, "UPDATE egraph_syn_defer SET b = '2020-01-01 00:00:00'", false);
+        // SAVEPOINT nesting, which is a different opcode from BEGIN, and the three explicit
+        // transaction kinds.
+        for (String tx : new String[] {
+            "BEGIN", "SAVEPOINT egraph_sp1", "INSERT INTO egraph_syn_trg VALUES(3, 3, 3)",
+            "SAVEPOINT egraph_sp2", "INSERT INTO egraph_syn_trg VALUES(4, 4, 4)",
+            "ROLLBACK TO egraph_sp2", "RELEASE egraph_sp2",
+            "ROLLBACK TO SAVEPOINT egraph_sp1", "RELEASE SAVEPOINT egraph_sp1", "COMMIT",
+            "BEGIN IMMEDIATE", "INSERT INTO egraph_syn_trg VALUES(5, 5, 5)", "COMMIT",
+            "BEGIN EXCLUSIVE", "INSERT INTO egraph_syn_trg VALUES(6, 6, 6)", "ROLLBACK",
+            "BEGIN DEFERRED", "SELECT count(*) FROM egraph_syn_trg", "END" }) {
+            executeContextStatement(state, tx, false);
+        }
+        // An unrecognised PRAGMA name is handed to the VFS through SQLITE_FCNTL_PRAGMA, which is a
+        // branch no spelled-out pragma reaches. The boolean pragmas below are each set and put back
+        // in the same breath; reverse_unordered_selects in particular must not be left on, since it
+        // would change the row order the oracle compares. writable_schema is deliberately absent:
+        // it lets a statement corrupt sqlite_master, which has no place in a correctness tool.
+        for (String pragma : new String[] {
+            "PRAGMA egraph_unknown_pragma", "PRAGMA egraph_unknown_pragma = 5",
+            "PRAGMA main.egraph_another_unknown = 'x'",
+            "PRAGMA case_sensitive_like = ON", "PRAGMA case_sensitive_like = OFF",
+            "PRAGMA short_column_names = OFF", "PRAGMA short_column_names = ON",
+            "PRAGMA full_column_names = ON", "PRAGMA full_column_names = OFF",
+            "PRAGMA trusted_schema = OFF", "PRAGMA trusted_schema = ON",
+            "PRAGMA cell_size_check = ON", "PRAGMA cell_size_check = OFF",
+            "PRAGMA reverse_unordered_selects = ON", "PRAGMA reverse_unordered_selects = OFF",
+            "PRAGMA automatic_index = OFF", "PRAGMA automatic_index = ON",
+            "PRAGMA recursive_triggers = ON", "PRAGMA recursive_triggers = OFF",
+            "PRAGMA checkpoint_fullfsync = ON", "PRAGMA checkpoint_fullfsync = OFF",
+            "PRAGMA fullfsync = ON", "PRAGMA fullfsync = OFF",
+            "PRAGMA analysis_limit = 100", "PRAGMA analysis_limit",
+            "PRAGMA busy_timeout = 100", "PRAGMA busy_timeout", "PRAGMA shrink_memory" }) {
+            executeContextStatement(state, pragma, false);
+        }
+        // OP_TypeCheck exists only for a STRICT table, and every declared type in one has its own
+        // branch there.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_st", true);
+        if (executeContextStatement(state,
+                "CREATE TABLE egraph_syn_st(a INT, b INTEGER, c REAL, d TEXT, e BLOB, f ANY) STRICT", true)) {
+            executeContextStatement(state, "INSERT INTO egraph_syn_st VALUES(1, 2, 3.5, 'x', x'00', 'anything')",
+                    false);
+            executeContextStatement(state,
+                    "INSERT INTO egraph_syn_st VALUES(-1, 9223372036854775807, 1e300, '', x'', 42)", false);
+            executeContextStatement(state, "UPDATE egraph_syn_st SET a = a + 1 WHERE b > 0", false);
+            executeContextStatement(state, "SELECT count(*), typeof(f) FROM egraph_syn_st GROUP BY typeof(f)",
+                    false);
+        }
         // ALTER forms, including renaming a virtual table (OP_VRename).
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt", true);
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt2", true);
@@ -3715,6 +3774,71 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         // is left exactly as it was found.
         executeContextStatement(state, "PRAGMA hard_heap_limit", false);
         executeContextStatement(state, "PRAGMA soft_heap_limit", false);
+        // Three things that need a few hundred rows to reach at all: FTS3's deferred-phrase
+        // evaluation, which only fires when a phrase token is too common to iterate; the join
+        // strategies the planner picks once ANALYZE has statistics; and the percentile window
+        // functions, whose inverse step needs a moving frame over real data. All of it goes in an
+        // attachment so none of those rows reach the corpus snapshot. Measured 115 lines - the same
+        // work in main is worth 149, and the 34-line difference is not worth putting another
+        // thousand rows into every captured case.
+        if (executeContextStatement(state, "ATTACH DATABASE 'file:egraph_heavy?vfs=memdb' AS egraph_heavy", false)) {
+            if (executeContextStatement(state, "CREATE VIRTUAL TABLE egraph_heavy.fd USING fts4(x)", false)) {
+                executeContextStatement(state,
+                        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i + 1 FROM n WHERE i < 400) "
+                                + "INSERT INTO egraph_heavy.fd(x) "
+                                + "SELECT 'common common common rare' || (i % 50) || ' filler' FROM n",
+                        false);
+                executeContextStatement(state, "INSERT INTO egraph_heavy.fd(fd) VALUES('optimize')", false);
+                for (String match : new String[] {"\"common rare1\"", "common rare1", "\"common common\" rare2",
+                    "common NEAR/2 rare3", "common -rare4", "\"common common common\"",
+                    "rare5 OR (common rare6)" }) {
+                    executeContextStatement(state,
+                            "SELECT count(*) FROM egraph_heavy.fd WHERE fd MATCH '" + match + "'", false);
+                }
+                executeContextStatement(state,
+                        "SELECT matchinfo(fd, 'pcx') FROM egraph_heavy.fd WHERE fd MATCH 'common rare8' LIMIT 2",
+                        false);
+            }
+            if (executeContextStatement(state, "CREATE TABLE egraph_heavy.ws(a INT, b INT, c TEXT, d INT)", false)) {
+                executeContextStatement(state,
+                        "WITH RECURSIVE s(i) AS (VALUES(1) UNION ALL SELECT i + 1 FROM s WHERE i < 800) "
+                                + "INSERT INTO egraph_heavy.ws SELECT i % 40, i % 9, 'w' || i, i FROM s",
+                        false);
+                executeContextStatement(state, "CREATE INDEX egraph_heavy.ws_ab ON ws(a, b)", false);
+                executeContextStatement(state, "CREATE INDEX egraph_heavy.ws_c ON ws(c)", false);
+                executeContextStatement(state, "CREATE INDEX egraph_heavy.ws_d ON ws(d) WHERE d > 400", false);
+                executeContextStatement(state, "ANALYZE egraph_heavy", false);
+                for (String planned : new String[] {
+                    "SELECT count(*) FROM egraph_heavy.ws WHERE a = 1 OR b = 2 OR c = 'w5'",
+                    "SELECT count(*) FROM egraph_heavy.ws WHERE d > 500 AND d < 600",
+                    "SELECT count(*) FROM egraph_heavy.ws AS x, egraph_heavy.ws AS y "
+                            + "WHERE x.a = y.b AND x.d < 20",
+                    "SELECT count(*) FROM egraph_heavy.ws AS x LEFT JOIN egraph_heavy.ws AS y "
+                            + "ON x.a = y.a AND y.b > 5",
+                    "SELECT count(*) FROM egraph_heavy.ws WHERE a IN (1, 2, 3) "
+                            + "AND b IN (SELECT b FROM egraph_heavy.ws WHERE d < 50)",
+                    "SELECT count(*) FROM egraph_heavy.ws WHERE c GLOB 'w1*'",
+                    "SELECT count(*) FROM egraph_heavy.ws WHERE rowid IN "
+                            + "(SELECT rowid FROM egraph_heavy.ws WHERE a = 5)",
+                    "SELECT count(*) FROM (SELECT a, max(d) AS m FROM egraph_heavy.ws GROUP BY a) AS m "
+                            + "JOIN egraph_heavy.ws ON egraph_heavy.ws.a = m.a",
+                    "SELECT count(*) FROM egraph_heavy.ws AS x JOIN egraph_heavy.ws AS y USING (a) "
+                            + "JOIN egraph_heavy.ws AS z USING (a) WHERE x.d < 10",
+                    "SELECT count(*) FROM (SELECT percentile_cont(d, 0.5) OVER (ORDER BY d "
+                            + "ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) FROM egraph_heavy.ws)",
+                    "SELECT count(*) FROM (SELECT median(d) OVER (ORDER BY d "
+                            + "ROWS BETWEEN 5 PRECEDING AND CURRENT ROW) FROM egraph_heavy.ws)",
+                    "SELECT count(*) FROM (SELECT percentile(d, 25) OVER (ORDER BY d "
+                            + "ROWS BETWEEN 4 PRECEDING AND CURRENT ROW) FROM egraph_heavy.ws)",
+                    "SELECT count(*) FROM (SELECT percentile_disc(d, 0.75) OVER (PARTITION BY a ORDER BY d "
+                            + "ROWS BETWEEN 2 PRECEDING AND 2 FOLLOWING) FROM egraph_heavy.ws)",
+                    "SELECT count(*) FROM (SELECT nth_value(d, 2) OVER (ORDER BY d "
+                            + "ROWS BETWEEN 3 PRECEDING AND CURRENT ROW) FROM egraph_heavy.ws)" }) {
+                    executeContextStatement(state, planned, false);
+                }
+            }
+            executeContextStatement(state, "DETACH DATABASE egraph_heavy", false);
+        }
         executeContextStatement(state, "PRAGMA wal_checkpoint(FULL)", false);
         executeContextStatement(state, "PRAGMA optimize", false);
         if (ATTACH_CONTEXT_COUNT.incrementAndGet() % 256 == 0) {
