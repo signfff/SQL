@@ -2598,7 +2598,22 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + "+ json_error_position('[1,2,3]') AS egraph_jsonb_errpos2, "
                         + "json_array_length(jsonb('[1,2,3,4,5]')) AS egraph_jsonb_len, "
                         + "json(json_remove(jsonb('[1,2,3,4]'), '$[1]', '$[1]')) AS egraph_jsonb_rem2, "
-                        + "json_pretty(jsonb('[1,[2,[3,[4,[5]]]]]')) AS egraph_jsonb_pretty2 "
+                        + "json_pretty(jsonb('[1,[2,[3,[4,[5]]]]]')) AS egraph_jsonb_pretty2, "
+                        // JSON5 is a second parser inside jsonTranslateTextToBlob: unquoted and
+                        // single-quoted labels, hex numbers, a leading + or bare ., the three
+                        // non-finite literals, trailing commas and both comment forms. None of it
+                        // is reachable from the strict-JSON spellings above.
+                        + "json('{a:1, b:2}') AS egraph_json5_bare, "
+                        + "json('{\"a\":1, /* c */ \"b\":2}') AS egraph_json5_comment, "
+                        + "json('[1,2,3,]') AS egraph_json5_trailing, "
+                        + "json('{''a'':''single''}') AS egraph_json5_squote, "
+                        + "json('{\"a\":0x1f, \"b\":+1.5, \"c\":.5, \"d\":5.}') AS egraph_json5_num, "
+                        + "json('{\"a\":Infinity, \"b\":-Infinity, \"c\":NaN}') AS egraph_json5_nonfinite, "
+                        + "json('{$dollar:1, _under:2, a1:3}') AS egraph_json5_ident, "
+                        + "json(jsonb('{a:1, b:[1,2,], c:0xff}')) AS egraph_json5_blob, "
+                        + "json_valid('{a:1}', 2) + json_valid('{a:1}', 1) + json_valid('{a:1}', 6) "
+                        + "AS egraph_json5_valid, "
+                        + "json_type('{a:Infinity}', '$.a') AS egraph_json5_type "
                         + "FROM (" + query
                         + ") AS egraph_jsonb_q WHERE json_valid(jsonb('{\"a\":[1,2],\"b\":{\"x\":3}}'), 8) = 1 "
                         + "AND json_extract(jsonb('{\"a\":[1,2],\"b\":{\"x\":3}}'), '$.b.x') = 3";
@@ -2937,8 +2952,19 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         // implementation with its own LIKE handling; between them 93 lines the four-hour run never
         // reached. These are created but not required: an older build without them still works.
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_fts5cat", true);
+        // sqlite3Fts5UnicodeCatParse walks a table of Unicode general-category names and only the
+        // names actually written get their branch, so every category is spelled out here.
         boolean cat = executeContextStatement(state, "CREATE VIRTUAL TABLE egraph_fts5cat USING fts5(x, "
-                + "tokenize = \"unicode61 categories 'L* N* Co' remove_diacritics 2\")", false);
+                + "tokenize = \"unicode61 categories 'Lu Ll Lt Lm Lo Mn Mc Me Nd Nl No Pc Pd Ps Pe Pi Pf Po "
+                + "Sm Sc Sk So Zs Zl Zp Cc Cf Co Cs Cn' remove_diacritics 2\")", false);
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_fts5cat2", true);
+        if (executeContextStatement(state, "CREATE VIRTUAL TABLE egraph_fts5cat2 USING fts5(x, "
+                + "tokenize = \"unicode61 categories 'L* N* P* S* Z* C* M*'\")", false)) {
+            executeContextStatement(state, "INSERT INTO egraph_fts5cat2(x) VALUES('one two three'), ('a.b,c')",
+                    false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_fts5cat2 WHERE egraph_fts5cat2 MATCH 'one'",
+                    false);
+        }
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_fts5tri", true);
         boolean tri = executeContextStatement(state,
                 "CREATE VIRTUAL TABLE egraph_fts5tri USING fts5(x, tokenize='trigram')", false);
@@ -3885,6 +3911,65 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         executeContextStatement(state, "INSERT INTO egraph_fts4_uni(egraph_fts4_uni) VALUES('merge=2,2')", false);
         executeContextStatement(state,
                 "CREATE VIRTUAL TABLE IF NOT EXISTS egraph_fts4_aux USING fts4aux(egraph_fts4)", true);
+        // fts3InitVtab parses the option list, and each option is its own branch there: an external
+        // content table, notindexed, prefix indexes, languageid, order=DESC with contentless rows,
+        // and the fts3tokenize eponymous table. 105 lines the four-hour run never reached.
+        executeContextStatement(state,
+                "CREATE TABLE IF NOT EXISTS egraph_fts4_ext(id INTEGER PRIMARY KEY, v TEXT)", true);
+        executeContextStatement(state, "DELETE FROM egraph_fts4_ext", false);
+        executeContextStatement(state,
+                "INSERT INTO egraph_fts4_ext(id, v) VALUES(1, 'hello world'), (2, 'foo bar baz')", false);
+        if (executeContextStatement(state,
+                "CREATE VIRTUAL TABLE IF NOT EXISTS egraph_fts4_opt USING fts4(a, b, matchinfo=fts3, "
+                        + "tokenize=simple, notindexed=b, prefix='2,3')",
+                false)) {
+            executeContextStatement(state, "DELETE FROM egraph_fts4_opt", false);
+            executeContextStatement(state,
+                    "INSERT INTO egraph_fts4_opt(a, b) VALUES('alpha beta', 'skipme'), ('gamma delta', 'skipme2')",
+                    false);
+            executeContextStatement(state,
+                    "SELECT count(*) FROM egraph_fts4_opt WHERE egraph_fts4_opt MATCH 'alpha'", false);
+        }
+        if (executeContextStatement(state,
+                "CREATE VIRTUAL TABLE IF NOT EXISTS egraph_fts4_cnt USING fts4(v, content='egraph_fts4_ext')",
+                false)) {
+            executeContextStatement(state,
+                    "INSERT INTO egraph_fts4_cnt(docid, v) SELECT id, v FROM egraph_fts4_ext", false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_fts4_cnt WHERE egraph_fts4_cnt MATCH 'hello'",
+                    false);
+        }
+        if (executeContextStatement(state,
+                "CREATE VIRTUAL TABLE IF NOT EXISTS egraph_fts4_lid USING fts4(a, tokenize=porter, languageid=lid)",
+                false)) {
+            executeContextStatement(state, "DELETE FROM egraph_fts4_lid", false);
+            executeContextStatement(state,
+                    "INSERT INTO egraph_fts4_lid(a, lid) VALUES('running fast', 0), ('jumped high', 1)", false);
+            executeContextStatement(state,
+                    "SELECT count(*) FROM egraph_fts4_lid WHERE egraph_fts4_lid MATCH 'run' AND lid = 0", false);
+        }
+        if (executeContextStatement(state,
+                "CREATE VIRTUAL TABLE IF NOT EXISTS egraph_fts4_desc USING fts4(a, order=DESC, content='')",
+                false)) {
+            executeContextStatement(state, "INSERT INTO egraph_fts4_desc(docid, a) VALUES(1, 'x y z')", false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_fts4_desc WHERE egraph_fts4_desc MATCH 'x'",
+                    false);
+        }
+        if (executeContextStatement(state,
+                "CREATE VIRTUAL TABLE IF NOT EXISTS egraph_fts3_tok USING fts3tokenize('porter')", false)) {
+            executeContextStatement(state, "SELECT count(*) FROM egraph_fts3_tok WHERE input = 'running jumped'",
+                    false);
+        }
+        // EXPLAIN is the only way into sqlite3VdbeDisplayP4: the oracle runs EXPLAIN QUERY PLAN on
+        // every query, but that renders no P4 operands.
+        for (String explained : new String[] {
+            "SELECT count(*) FROM egraph_fts4 WHERE egraph_fts4 MATCH 'sqlite'",
+            "SELECT docid, title FROM egraph_fts4_uni WHERE body LIKE 'body 1%'",
+            "INSERT INTO egraph_fts4_ext(v) VALUES('explained')",
+            "UPDATE egraph_fts4_ext SET v = v || '!' WHERE id = 1",
+            "DELETE FROM egraph_fts4_ext WHERE id > 100",
+            "WITH RECURSIVE r(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM r WHERE x < 5) SELECT sum(x) FROM r" }) {
+            executeContextStatement(state, "EXPLAIN " + explained, false);
+        }
         return ok;
     }
 
