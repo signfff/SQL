@@ -3387,6 +3387,85 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                     "SELECT count(*), sum(b), sum(c), sum(d), sum(e), sum(s) FROM egraph_syn_gl2", false);
             executeContextStatement(state, "SELECT count(*) FROM egraph_syn_gl2 WHERE e > 0", false);
         }
+        // A second pass over the productions yy_reduce still had cold. The parenthesised join with
+        // its own alias is the one that keeps giving: round six wrote five spellings of it and only
+        // eight of its twenty-nine lines came back, so this writes eight more.
+        for (String grammar : new String[] {
+            "SELECT count(*) FROM egraph_syn_par LEFT JOIN (egraph_syn_chi LEFT JOIN egraph_syn_par AS p3 "
+                    + "USING (k)) AS s2 USING (k)",
+            "SELECT count(*) FROM egraph_syn_par JOIN (egraph_syn_chi NATURAL JOIN egraph_syn_par AS p4) "
+                    + "AS s3 USING (k)",
+            "SELECT count(*) FROM (egraph_syn_par JOIN egraph_syn_chi USING (k)) AS s4 "
+                    + "JOIN (egraph_syn_chi JOIN egraph_syn_par AS p5 USING (k)) AS s5 ON s4.k = s5.k",
+            "SELECT count(*) FROM egraph_syn_par RIGHT JOIN (egraph_syn_chi CROSS JOIN egraph_syn_par AS p6) "
+                    + "AS s6 ON egraph_syn_par.k = s6.k",
+            "SELECT count(*) FROM egraph_syn_par FULL JOIN (egraph_syn_chi JOIN egraph_syn_par AS p7 ON 1) "
+                    + "AS s7 ON egraph_syn_par.k = s7.k",
+            "SELECT count(*) FROM (egraph_syn_par AS x JOIN egraph_syn_chi AS y ON x.k = y.k) AS s8",
+            "SELECT count(*) FROM ((egraph_syn_par JOIN egraph_syn_chi USING (k)) "
+                    + "JOIN egraph_syn_par AS p8 USING (k)) AS s9",
+            // The empty IN list and the negated forms are separate branches from IN over values.
+            "SELECT count(*) FROM egraph_syn_par WHERE k IN ()",
+            "SELECT count(*) FROM egraph_syn_par WHERE k NOT IN ()",
+            "SELECT count(*) FROM egraph_syn_par WHERE (k) IN (1, 2)",
+            "SELECT count(*) FROM egraph_syn_par WHERE k IN (SELECT k FROM egraph_syn_chi)",
+            "SELECT count(*) FROM egraph_syn_par WHERE k NOT IN (SELECT k FROM egraph_syn_chi)",
+            "SELECT count(*) FROM egraph_syn_par WHERE v IN ('p1', 'p2', 'p3', 'p4', 'p5', 'p6')",
+            // CASE with and without an operand, and with no ELSE.
+            "SELECT CASE 1 WHEN 1 THEN 'a' END, CASE 1 WHEN 2 THEN 'a' WHEN 1 THEN 'b' ELSE 'c' END, "
+                    + "CASE WHEN NULL THEN 1 END",
+            // A bound parameter is a production of its own, and nothing in the workload writes one.
+            // These fail at bind time, after the parser has already reduced the rule.
+            "SELECT ?", "SELECT ?1 + ?2", "SELECT :name, @other, $third",
+            "REINDEX", "REINDEX egraph_syn_par" }) {
+            executeContextStatement(state, grammar, false);
+        }
+        // ALTER forms added in recent SQLite versions, and the two table-option error paths.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_alt", true);
+        if (executeContextStatement(state, "CREATE TABLE egraph_syn_alt(a INT NOT NULL, b INT, c TEXT)", true)) {
+            executeContextStatement(state, "INSERT INTO egraph_syn_alt VALUES(1, 1, 'x')", false);
+            executeContextStatement(state, "ALTER TABLE egraph_syn_alt ALTER COLUMN a DROP NOT NULL", false);
+            executeContextStatement(state, "ALTER TABLE egraph_syn_alt ALTER COLUMN b SET NOT NULL", false);
+            executeContextStatement(state, "ALTER TABLE egraph_syn_alt ADD CHECK (b > 0)", false);
+            executeContextStatement(state,
+                    "ALTER TABLE egraph_syn_alt ADD CONSTRAINT egraph_syn_chk CHECK (b < 1000)", false);
+        }
+        executeContextStatement(state, "CREATE TABLE egraph_syn_badopt(a INT) SOMEUNKNOWNOPTION", false);
+        executeContextStatement(state, "CREATE TABLE egraph_syn_badopt2(a INT PRIMARY KEY) WITHOUT SOMETHING",
+                false);
+        // Header pragmas write a word of the file header, which no query reads and the corpus
+        // snapshot - which reads sqlite_master - does not capture. foreign_key_check needs an
+        // actual dangling reference before it reports anything.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_fkc", true);
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_fkp", true);
+        if (executeContextStatement(state, "CREATE TABLE egraph_syn_fkp(id INTEGER PRIMARY KEY)", true)
+                && executeContextStatement(state,
+                        "CREATE TABLE egraph_syn_fkc(id INTEGER PRIMARY KEY, p INT REFERENCES egraph_syn_fkp(id))",
+                        true)) {
+            executeContextStatement(state, "INSERT INTO egraph_syn_fkp VALUES(1)", false);
+            executeContextStatement(state, "INSERT INTO egraph_syn_fkc VALUES(1, 1), (2, 999)", false);
+            executeContextStatement(state, "PRAGMA foreign_key_check", false);
+            executeContextStatement(state, "PRAGMA foreign_key_check(egraph_syn_fkc)", false);
+            executeContextStatement(state, "PRAGMA main.foreign_key_check", false);
+        }
+        for (String pragma : new String[] {
+            "PRAGMA user_version = 42", "PRAGMA user_version", "PRAGMA main.user_version = 43",
+            "PRAGMA application_id = 7", "PRAGMA application_id", "PRAGMA data_version",
+            "PRAGMA schema_version", "PRAGMA freelist_count",
+            "PRAGMA main.table_list(egraph_syn_par)", "PRAGMA table_list(egraph_syn_chi)",
+            "PRAGMA integrity_check(egraph_syn_par)", "PRAGMA main.integrity_check(1)",
+            "PRAGMA quick_check(egraph_syn_par)",
+            "PRAGMA optimize(0x02)", "PRAGMA optimize(0x10)", "PRAGMA optimize(0x10002)",
+            "PRAGMA main.optimize", "PRAGMA table_info(egraph_syn_par)",
+            "PRAGMA main.table_xinfo(egraph_syn_par)", "PRAGMA index_list(egraph_syn_par)",
+            "PRAGMA main.index_list(egraph_syn_chi)",
+            // Set and read back, then put the default back: both are documented as unable to change
+            // what a query returns, but leaving a connection setting altered is a habit worth not
+            // having after what temp_store_directory did.
+            "PRAGMA cache_spill = 1000", "PRAGMA cache_spill", "PRAGMA cache_spill = ON",
+            "PRAGMA mmap_size = 1048576", "PRAGMA mmap_size", "PRAGMA mmap_size = 0" }) {
+            executeContextStatement(state, pragma, false);
+        }
         // ALTER forms, including renaming a virtual table (OP_VRename).
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt", true);
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt2", true);
