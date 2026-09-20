@@ -3106,6 +3106,94 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         executeContextStatement(state, "INSERT INTO egraph_syn_par(k, v) VALUES (5, 'p5') RETURNING k, v", false);
         executeContextStatement(state, "UPDATE egraph_syn_par SET v = v || '!' WHERE k = 5 RETURNING k", false);
         executeContextStatement(state, "DELETE FROM egraph_syn_strict AS s WHERE s.a = 3 RETURNING a, b", false);
+        // Grammar productions that yy_reduce never reached. These are statements rather than
+        // wrapper expressions on purpose: several need ORDER BY, and the oracle switches to an
+        // order-sensitive row comparison as soon as that string appears in the query it compares.
+        //
+        // A parenthesised join carrying its own alias and ON clause is the single largest of them
+        // at 29 lines; the rest are three-part names, IN over a literal list and over a
+        // table-valued function, named windows that reference each other, the four frame EXCLUDE
+        // forms, aggregate ORDER BY, chained compound selects, IS DISTINCT FROM, the two-argument
+        // LIMIT, and three-keyword joins.
+        for (String grammar : new String[] {
+            "SELECT count(*) FROM egraph_syn_par JOIN (egraph_syn_chi JOIN egraph_syn_par AS p2 "
+                    + "ON egraph_syn_chi.k = p2.k) AS sub ON egraph_syn_par.k = sub.k",
+            "SELECT count(*) FROM (egraph_syn_par JOIN egraph_syn_chi ON egraph_syn_par.k = egraph_syn_chi.k) AS j1",
+            "SELECT count(*) FROM egraph_syn_par LEFT JOIN (egraph_syn_chi AS c1 LEFT JOIN egraph_syn_chi AS c2 "
+                    + "ON c1.k = c2.k) AS n ON egraph_syn_par.k = n.k",
+            "SELECT count(*) FROM (egraph_syn_par NATURAL JOIN egraph_syn_chi) AS nj",
+            "SELECT count(*) FROM (egraph_syn_par JOIN egraph_syn_chi USING (k)) AS uj",
+            "SELECT count(*) FROM egraph_syn_par WHERE main.egraph_syn_par.k > 0",
+            "SELECT main.egraph_syn_par.k FROM main.egraph_syn_par WHERE main.egraph_syn_par.k < 5",
+            "SELECT count(*) FROM egraph_syn_par WHERE k IN (1, 2, 3, 4, 5)",
+            "SELECT count(*) FROM egraph_syn_par WHERE k NOT IN (1, 2, 3)",
+            "SELECT count(*) FROM egraph_syn_par WHERE v IN main.pragma_table_info('egraph_syn_par')",
+            "SELECT group_concat(v ORDER BY k) FROM egraph_syn_par",
+            "SELECT group_concat(v, '|' ORDER BY k DESC) FROM egraph_syn_par",
+            "SELECT count(*) FROM (SELECT sum(k) OVER w1 AS s1, sum(k) OVER w2 AS s2 FROM egraph_syn_par "
+                    + "WINDOW w1 AS (ORDER BY k), w2 AS (ORDER BY v))",
+            "SELECT count(*) FROM (SELECT sum(k) OVER w2 FROM egraph_syn_par "
+                    + "WINDOW w1 AS (PARTITION BY k % 3), w2 AS (w1 ORDER BY k))",
+            "SELECT count(*) FROM (SELECT sum(k) OVER w3 FROM egraph_syn_par "
+                    + "WINDOW w1 AS (ORDER BY k), w3 AS (w1 ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING))",
+            "SELECT count(*) FROM (SELECT sum(k) OVER (ORDER BY k ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING "
+                    + "EXCLUDE CURRENT ROW) FROM egraph_syn_par)",
+            "SELECT count(*) FROM (SELECT sum(k) OVER (ORDER BY k RANGE BETWEEN UNBOUNDED PRECEDING AND "
+                    + "CURRENT ROW EXCLUDE GROUP) FROM egraph_syn_par)",
+            "SELECT count(*) FROM (SELECT sum(k) OVER (ORDER BY k GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING "
+                    + "EXCLUDE TIES) FROM egraph_syn_par)",
+            "SELECT count(*) FROM (SELECT sum(k) OVER (ORDER BY k ROWS UNBOUNDED PRECEDING "
+                    + "EXCLUDE NO OTHERS) FROM egraph_syn_par)",
+            "SELECT count(*) FROM (SELECT k FROM egraph_syn_par UNION SELECT k FROM egraph_syn_chi "
+                    + "UNION SELECT 999)",
+            "SELECT count(*) FROM (SELECT k FROM egraph_syn_par UNION ALL SELECT k FROM egraph_syn_chi "
+                    + "EXCEPT SELECT 1)",
+            "SELECT count(*) FROM (SELECT k FROM egraph_syn_par INTERSECT SELECT k FROM egraph_syn_chi "
+                    + "UNION SELECT 1000)",
+            "SELECT count(*) FROM egraph_syn_par WHERE k IS NOT DISTINCT FROM 5",
+            "SELECT count(*) FROM egraph_syn_par WHERE v IS DISTINCT FROM 'p1'",
+            "SELECT NULL IS DISTINCT FROM NULL, 1 IS DISTINCT FROM NULL",
+            "SELECT count(*) FROM (SELECT k FROM egraph_syn_par LIMIT 2, 5)",
+            "SELECT count(*) FROM (SELECT k FROM egraph_syn_par ORDER BY k LIMIT 1, 2)",
+            "SELECT count(*) FROM egraph_syn_par NATURAL LEFT OUTER JOIN egraph_syn_chi",
+            "SELECT count(*) FROM egraph_syn_par NATURAL RIGHT OUTER JOIN egraph_syn_chi",
+            "SELECT count(*) FROM egraph_syn_par NATURAL FULL OUTER JOIN egraph_syn_chi",
+            "PRAGMA main.cache_size(-2000)" }) {
+            executeContextStatement(state, grammar, false);
+        }
+        // RAISE only exists inside a trigger body, and a body holding several statements is its own
+        // production. Kept on a table of its own so the ABORT trigger cannot block anything above.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_trg", true);
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_trglog", true);
+        if (executeContextStatement(state, "CREATE TABLE egraph_syn_trg(a INT, b INT, c INT)", true)
+                && executeContextStatement(state, "CREATE TABLE egraph_syn_trglog(msg TEXT)", true)) {
+            executeContextStatement(state,
+                    "CREATE TRIGGER egraph_syn_t1 AFTER INSERT ON egraph_syn_trg BEGIN "
+                            + "INSERT INTO egraph_syn_trglog VALUES('ins'); SELECT 1; "
+                            + "UPDATE egraph_syn_trglog SET msg = msg; END",
+                    false);
+            executeContextStatement(state,
+                    "CREATE TRIGGER egraph_syn_t2 BEFORE UPDATE ON egraph_syn_trg FOR EACH ROW "
+                            + "WHEN new.a > 1000 BEGIN SELECT RAISE(IGNORE); END",
+                    false);
+            executeContextStatement(state,
+                    "CREATE TRIGGER egraph_syn_t3 BEFORE DELETE ON egraph_syn_trg BEGIN "
+                            + "SELECT RAISE(ABORT, 'no deletes'); END",
+                    false);
+            executeContextStatement(state, "INSERT INTO egraph_syn_trg VALUES(1, 1, 1), (2, 2, 2)", false);
+            executeContextStatement(state, "UPDATE egraph_syn_trg SET a = 2000 WHERE c = 2", false);
+            executeContextStatement(state, "UPDATE egraph_syn_trg SET b = b WHERE a < 5", false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_syn_trglog", false);
+        }
+        // DEFAULT taking a bare keyword, and both deferrable spellings on a foreign key.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_defer", true);
+        executeContextStatement(state,
+                "CREATE TABLE egraph_syn_defer(a INT DEFAULT INDEXED, b INT DEFAULT CURRENT_TIMESTAMP, "
+                        + "c INT REFERENCES egraph_syn_par(k) DEFERRABLE INITIALLY DEFERRED, "
+                        + "d INT REFERENCES egraph_syn_par(k) NOT DEFERRABLE INITIALLY IMMEDIATE)",
+                true);
+        executeContextStatement(state, "INSERT INTO egraph_syn_defer(c, d) VALUES(1, 1)", false);
+        executeContextStatement(state, "UPDATE egraph_syn_defer SET b = '2020-01-01 00:00:00'", false);
         // ALTER forms, including renaming a virtual table (OP_VRename).
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt", true);
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt2", true);
