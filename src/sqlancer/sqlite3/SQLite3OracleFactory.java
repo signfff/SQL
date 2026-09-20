@@ -2236,6 +2236,10 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + "lead(p.id, 2, -1) OVER (ORDER BY p.id) AS e, ntile(4) OVER (ORDER BY p.id) AS f, "
                         + "group_concat(p.bucket) OVER (ORDER BY p.id ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING) "
                         + "AS g, nth_value(p.id, 3) OVER (ORDER BY p.id ROWS BETWEEN UNBOUNDED PRECEDING AND "
+                        // GROUPS and RANGE frames, percent_rank, cume_dist and a FILTER on a window
+                        // aggregate were measured here and taken back out: 59 lines of coverage for
+                        // 16 ms per execution on a wrapper that already costs 3.8 ms, and it runs
+                        // once for the original plus once per variant.
                         + "CURRENT ROW) AS h, dense_rank() OVER (ORDER BY p.bucket) AS i "
                         + "FROM (" + query + ") AS egraph_wf_q JOIN egraph_sorter_probe AS p ON p.bucket = 0"
                         + ") AS w";
@@ -2269,6 +2273,14 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + "(SELECT count(*) FROM pragma_index_list('egraph_sorter_probe')) AS egraph_pv_ilist, "
                         + "(SELECT count(*) FROM pragma_function_list WHERE name LIKE 'j%') AS egraph_pv_flist, "
                         + "(SELECT count(*) FROM pragma_module_list WHERE name LIKE 'fts%') AS egraph_pv_mlist, "
+                        + "(SELECT count(*) FROM pragma_table_list) AS egraph_pv_tlist, "
+                        + "(SELECT count(*) FROM pragma_database_list) AS egraph_pv_dblist, "
+                        + "(SELECT count(*) FROM pragma_pragma_list) AS egraph_pv_plist, "
+                        + "(SELECT count(*) FROM pragma_compile_options WHERE compile_options LIKE 'ENABLE%') AS egraph_pv_copts, "
+                        + "(SELECT count(*) FROM pragma_index_info((SELECT name FROM sqlite_master "
+                        + "WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 1))) AS egraph_pv_iinfo, "
+                        + "(SELECT count(*) FROM pragma_index_xinfo((SELECT name FROM sqlite_master "
+                        + "WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name LIMIT 1))) AS egraph_pv_ixinfo, "
                         + "(SELECT count(*) FROM pragma_collation_list) AS egraph_pv_clist FROM (" + query
                         + ") AS egraph_pragma_q";
             case FTS4_MERGE_LCS_CONTEXT:
@@ -2537,7 +2549,20 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + "json_extract(json_object('a\"b', 7, 'c', 8), '$.\"a\\\"b\"') AS egraph_jsonb_esc, "
                         + "json_extract('{\"x\ty\":5,\"z\":6}', '$.\"x\ty\"') AS egraph_jsonb_esc2, "
                         + "(SELECT count(*) FROM json_tree('{\"a\\\"b\":{\"x\ty\":1}}')) "
-                        + "AS egraph_jsonb_tree FROM (" + query
+                        + "AS egraph_jsonb_tree, "
+                        + "json(jsonb_insert(jsonb('{\"a\":1}'), '$.b', 2)) AS egraph_jsonb_ins, "
+                        + "json(jsonb_replace(jsonb('{\"a\":1}'), '$.a', 'x')) AS egraph_jsonb_rep, "
+                        + "json(jsonb_remove(jsonb('{\"a\":1,\"b\":2}'), '$.b')) AS egraph_jsonb_rem, "
+                        + "json(jsonb_set(jsonb('{\"a\":1}'), '$.a', json('[1,2]'))) AS egraph_jsonb_set, "
+                        + "json(jsonb_patch(jsonb('{\"a\":1}'), '{\"b\":2}')) AS egraph_jsonb_patch, "
+                        + "json(jsonb_array(1, 'two', NULL, 3.5)) AS egraph_jsonb_arr, "
+                        + "json(jsonb_object('k', 1, 'j', 2)) AS egraph_jsonb_obj, "
+                        + "json_valid(x'ff00ff', 8) AS egraph_jsonb_badblob, "
+                        + "json_error_position('{\"a\":1,,}') AS egraph_jsonb_errpos, "
+                        + "json_type(jsonb('{\"a\":1}'), '$.a') AS egraph_jsonb_type, "
+                        + "json_pretty(jsonb('{\"a\":[1,2],\"b\":{\"c\":3}}')) AS egraph_jsonb_pretty, "
+                        + "(SELECT count(*) FROM json_each(jsonb('[1,2,3,4]'))) AS egraph_jsonb_each "
+                        + "FROM (" + query
                         + ") AS egraph_jsonb_q WHERE json_valid(jsonb('{\"a\":[1,2],\"b\":{\"x\":3}}'), 8) = 1 "
                         + "AND json_extract(jsonb('{\"a\":[1,2],\"b\":{\"x\":3}}'), '$.b.x') = 3";
             case XFER_OPTIMIZATION_CONTEXT:
@@ -2575,6 +2600,14 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         // writer emits, and unistr_quote is what has to produce the
                         // escaped form anyway.
                         + "unistr_quote(char(9, 10, 65)) AS egraph_cf_uq_ctrl, "
+                        + "json('{\"a\":1}') -> 'a' AS egraph_cf_arrow, "
+                        + "json('{\"a\":1}') ->> 'a' AS egraph_cf_arrow2, "
+                        + "json_extract('{\"a\":[1,2,3]}', '$.a') AS egraph_cf_jx, "
+                        + "json_quote(json('[1,2]')) AS egraph_cf_jq, "
+                        + "json_insert('{\"a\":1}', '$.b', json('[2]')) AS egraph_cf_ji, "
+                        + "json_array(json('{\"x\":1}'), 2) AS egraph_cf_ja, "
+                        + "(SELECT json_group_array(value) FROM json_each('[1,2,3]')) AS egraph_cf_jga, "
+                        + "(SELECT json_group_object(key, value) FROM json_each('{\"p\":1,\"q\":2}')) AS egraph_cf_jgo, "
                         + "(SELECT median(column1) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_median, "
                         + "(SELECT median(column1) FROM (VALUES(1),(NULL),(3))) AS egraph_cf_median_null, "
                         + "(SELECT percentile(column1, 25) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_p25, "
