@@ -2350,7 +2350,27 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + "(SELECT count(*) FROM egraph_syn_par FULL OUTER JOIN egraph_syn_chi "
                         + "ON egraph_syn_par.k = egraph_syn_chi.k) AS egraph_syn_full, "
                         + "(SELECT sum(g) + sum(h) FROM egraph_syn_def) AS egraph_syn_generated, "
-                        + "(SELECT sum(subtype(jsonb(v))) FROM egraph_syn_par) AS egraph_syn_subtype "
+                        + "(SELECT sum(subtype(jsonb(v))) FROM egraph_syn_par) AS egraph_syn_subtype, "
+                        // Name resolution: a CTE joined to itself through USING, an alias that
+                        // shadows the column it is built from, a correlated subquery that reaches
+                        // past its own alias, and the three compound operators. Each wraps in
+                        // count(*) so the subquery flattener has to decide whether it can collapse
+                        // them, which is where most of these lines are. Still no ORDER BY.
+                        + "(SELECT count(*) FROM (WITH egraph_syn_w(p, q) AS "
+                        + "(SELECT k, v FROM egraph_syn_par) SELECT w1.p FROM egraph_syn_w AS w1 "
+                        + "JOIN egraph_syn_w AS w2 USING (p))) AS egraph_syn_cte, "
+                        + "(SELECT count(*) FROM (SELECT k AS v, v AS k FROM egraph_syn_par) WHERE v > 0) "
+                        + "AS egraph_syn_shadow, "
+                        + "(SELECT count(*) FROM (SELECT (SELECT count(*) FROM egraph_syn_chi AS inr "
+                        + "WHERE inr.k = outr.k) AS n FROM egraph_syn_par AS outr)) AS egraph_syn_corr, "
+                        + "(SELECT count(*) FROM (SELECT k FROM egraph_syn_par UNION SELECT k FROM egraph_syn_chi)) "
+                        + "AS egraph_syn_union, "
+                        + "(SELECT count(*) FROM (SELECT k FROM egraph_syn_par EXCEPT SELECT k FROM egraph_syn_chi)) "
+                        + "AS egraph_syn_except, "
+                        + "(SELECT count(*) FROM (SELECT k FROM egraph_syn_par INTERSECT "
+                        + "SELECT k FROM egraph_syn_chi)) AS egraph_syn_intersect, "
+                        + "(SELECT count(*) FROM egraph_syn_par AS x LEFT JOIN egraph_syn_par AS y "
+                        + "USING (k, v)) AS egraph_syn_using2 "
                         + "FROM (" + query + ") AS egraph_syn_q";
             case FTS5_DEEP_QUERY_CONTEXT:
                 // The full FTS5 query grammar against an index that has prefix
@@ -2561,7 +2581,24 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + "json_error_position('{\"a\":1,,}') AS egraph_jsonb_errpos, "
                         + "json_type(jsonb('{\"a\":1}'), '$.a') AS egraph_jsonb_type, "
                         + "json_pretty(jsonb('{\"a\":[1,2],\"b\":{\"c\":3}}')) AS egraph_jsonb_pretty, "
-                        + "(SELECT count(*) FROM json_each(jsonb('[1,2,3,4]'))) AS egraph_jsonb_each "
+                        + "(SELECT count(*) FROM json_each(jsonb('[1,2,3,4]'))) AS egraph_jsonb_each, "
+                        // The text-to-blob and blob-to-text translators are 300 lines between them,
+                        // and each JSON type, escape and numeric form is a separate branch in both.
+                        // json_valid's flag argument picks which of the two validators runs, and a
+                        // blob that is not JSONB at all exercises the rejection path.
+                        + "json(jsonb('{\"a\":1,\"b\":[1,2,{\"c\":null}],\"d\":true,\"e\":false,\"f\":1.5e10}')) "
+                        + "AS egraph_jsonb_round, "
+                        + "json(jsonb('[\"\\t\\n\\r\\b\\f\\/\\\\\",-0.0,1e-300,1e300]')) AS egraph_jsonb_esc3, "
+                        + "json(jsonb('{\"n\":{\"d\":{\"dd\":{\"ddd\":[1,[2,[3,[4]]]]}}}}')) AS egraph_jsonb_deep, "
+                        + "json_valid(jsonb('{\"a\":1}'), 1) + json_valid(jsonb('{\"a\":1}'), 2) "
+                        + "+ json_valid(jsonb('{\"a\":1}'), 4) AS egraph_jsonb_flags, "
+                        + "json_valid(x'00', 8) + json_valid(x'0c', 8) + json_valid(x'7c00ff', 8) "
+                        + "AS egraph_jsonb_badblobs, "
+                        + "json_error_position('[1,2') + json_error_position('{\"a\"}') "
+                        + "+ json_error_position('[1,2,3]') AS egraph_jsonb_errpos2, "
+                        + "json_array_length(jsonb('[1,2,3,4,5]')) AS egraph_jsonb_len, "
+                        + "json(json_remove(jsonb('[1,2,3,4]'), '$[1]', '$[1]')) AS egraph_jsonb_rem2, "
+                        + "json_pretty(jsonb('[1,[2,[3,[4,[5]]]]]')) AS egraph_jsonb_pretty2 "
                         + "FROM (" + query
                         + ") AS egraph_jsonb_q WHERE json_valid(jsonb('{\"a\":[1,2],\"b\":{\"x\":3}}'), 8) = 1 "
                         + "AND json_extract(jsonb('{\"a\":[1,2],\"b\":{\"x\":3}}'), '$.b.x') = 3";
@@ -2608,6 +2645,18 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + "json_array(json('{\"x\":1}'), 2) AS egraph_cf_ja, "
                         + "(SELECT json_group_array(value) FROM json_each('[1,2,3]')) AS egraph_cf_jga, "
                         + "(SELECT json_group_object(key, value) FROM json_each('{\"p\":1,\"q\":2}')) AS egraph_cf_jgo, "
+                        // Literal forms the generator never writes: hex, digit separators, values
+                        // that overflow an integer into a real, and the string-to-number
+                        // conversions those feed. sqlite3DequoteNumber and the CAST paths are what
+                        // these reach.
+                        + "0x7fffffff + 0X10 + -0x10 AS egraph_cf_hex, "
+                        + "1_000_000 + 0x1_0 + 1_0.5_0 AS egraph_cf_sep, "
+                        + "9223372036854775807 + -9223372036854775808 AS egraph_cf_intmax, "
+                        + "9223372036854775808 + 1e400 + 1e-400 AS egraph_cf_overflow, "
+                        + "CAST('0x10' AS INTEGER) + CAST('1_0' AS INTEGER) + CAST(' 12abc' AS INTEGER) "
+                        + "AS egraph_cf_castint, "
+                        + "CAST('1e5' AS REAL) + CAST('inf' AS REAL) + CAST('-0' AS REAL) AS egraph_cf_castreal, "
+                        + "typeof(x'01') || typeof(1.0) || typeof(9223372036854775808) AS egraph_cf_types, "
                         + "(SELECT median(column1) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_median, "
                         + "(SELECT median(column1) FROM (VALUES(1),(NULL),(3))) AS egraph_cf_median_null, "
                         + "(SELECT percentile(column1, 25) FROM (VALUES(1),(2),(3),(10))) AS egraph_cf_p25, "
@@ -2884,8 +2933,33 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_fts5none", true);
         ok &= executeContextStatement(state, "CREATE VIRTUAL TABLE egraph_fts5none USING fts5(x, y, detail=none)",
                 true);
+        // categories= drives sqlite3Fts5UnicodeCatParse, and trigram is a third tokenizer
+        // implementation with its own LIKE handling; between them 93 lines the four-hour run never
+        // reached. These are created but not required: an older build without them still works.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_fts5cat", true);
+        boolean cat = executeContextStatement(state, "CREATE VIRTUAL TABLE egraph_fts5cat USING fts5(x, "
+                + "tokenize = \"unicode61 categories 'L* N* Co' remove_diacritics 2\")", false);
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_fts5tri", true);
+        boolean tri = executeContextStatement(state,
+                "CREATE VIRTUAL TABLE egraph_fts5tri USING fts5(x, tokenize='trigram')", false);
         if (!ok) {
             return false;
+        }
+        if (cat) {
+            executeContextStatement(state,
+                    "INSERT INTO egraph_fts5cat(rowid, x) VALUES (1, 'Hello World 123'), "
+                            + "(2, 'cafe naive 45'), (3, 'x1y2z3 alpha')",
+                    false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_fts5cat WHERE egraph_fts5cat MATCH 'hello'",
+                    false);
+        }
+        if (tri) {
+            executeContextStatement(state,
+                    "INSERT INTO egraph_fts5tri(rowid, x) VALUES (1, 'abcdef ghijkl'), (2, 'xyz123 abcdef')",
+                    false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_fts5tri WHERE egraph_fts5tri MATCH 'bcd'",
+                    false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_fts5tri WHERE x LIKE '%cde%'", false);
         }
         executeContextStatement(state,
                 "INSERT INTO egraph_fts5asc(rowid, x) VALUES (1, 'Alpha BETA gamma'), (2, 'alpha delta EPSILON'), "
@@ -3420,6 +3494,28 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                     "INSERT INTO egraph_aux.t(v) VALUES('aux-a'), ('aux-b'), ('aux-c')", false);
             executeContextStatement(state, "SELECT count(*), max(v) FROM egraph_aux.t WHERE id > 0", false);
             executeContextStatement(state, "DETACH egraph_aux", false);
+        }
+        // A URI filename is parsed by sqlite3ParseUri, and every query parameter is its own branch
+        // there; the memdb VFS behind these is a second body of code that a plain ':memory:' never
+        // opens. Measured at 363 lines the four-hour run never reached, the largest single block
+        // found anywhere in the uncovered set. The databases are detached again, so nothing here
+        // can change what a later query returns.
+        for (String uri : new String[] {
+            "'file:egraph_uri1?vfs=memdb&cache=shared'",
+            "'file:egraph_uri2?vfs=memdb&mode=memory&cache=private'",
+            "'file:egraph_uri3?vfs=memdb&nolock=1&psow=0'",
+            "'file:egraph_uri4?vfs=memdb&journal_mode=memory&synchronous=off'" }) {
+            if (!executeContextStatement(state, "ATTACH DATABASE " + uri + " AS egraph_uri", false)) {
+                continue;
+            }
+            executeContextStatement(state, "CREATE TABLE IF NOT EXISTS egraph_uri.u(id INTEGER PRIMARY KEY, v TEXT)",
+                    false);
+            executeContextStatement(state, "INSERT INTO egraph_uri.u(v) VALUES('uri-a'), ('uri-b')", false);
+            executeContextStatement(state, "CREATE INDEX IF NOT EXISTS egraph_uri.u_v ON u(v)", false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_uri.u WHERE v > 'a'", false);
+            executeContextStatement(state, "PRAGMA egraph_uri.page_count", false);
+            executeContextStatement(state, "PRAGMA egraph_uri.integrity_check", false);
+            executeContextStatement(state, "DETACH DATABASE egraph_uri", false);
         }
         executeContextStatement(state, "PRAGMA wal_checkpoint(FULL)", false);
         executeContextStatement(state, "PRAGMA optimize", false);
