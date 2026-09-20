@@ -222,6 +222,12 @@ fn generate_select_variants(
         None => return Ok(Vec::new()),
     };
 
+    // Row values get no variants at all - see contains_row_value for why every rule that is sound
+    // for scalars stops being sound once an operand is a tuple.
+    if sql_rewrite::contains_row_value(selection) {
+        return Ok(Vec::new());
+    }
+
     let variants = generate_equivalent_where_clauses(selection, source_sql, max_variants, 20)?;
 
     let original_str = query.to_string();

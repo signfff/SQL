@@ -639,6 +639,47 @@ fn sql_expr_to_recexpr_impl(
     }
 }
 
+/// Does this predicate compare row values?
+///
+/// SQLite gives row values two different NULL rules. `(a,b) = (c,d)` is FALSE as soon as one pair is
+/// definitely unequal, so `(NULL, 0.25) <> ('45','46')` is TRUE. But `(a,b) >= (c,d)` short-circuits
+/// positionally and is NULL as soon as the first pair is, so the same comparison written as a
+/// BETWEEN is NULL and the row disappears. Rules that are sound for scalars - `eq-to-tight` turns
+/// `x = y` into `x >= y AND x <= y` - are therefore unsound here, and a long run did report that
+/// pair as a result mismatch.
+///
+/// The converter has no row-value node: a tuple folds into an opaque Symbol, so nothing downstream
+/// can tell it apart from a column. Refusing the whole query is what keeps every rule honest
+/// without having to certify each one against row-value semantics.
+///
+/// Only the shapes the converter takes apart are walked. A tuple anywhere else already sits inside a
+/// subtree that becomes one opaque Symbol, and no rule decomposes those.
+pub fn contains_row_value(expr: &SqlExpr) -> bool {
+    match expr {
+        SqlExpr::Tuple(_) => true,
+        SqlExpr::Nested(inner) => contains_row_value(inner),
+        SqlExpr::BinaryOp { left, right, .. } => {
+            contains_row_value(left) || contains_row_value(right)
+        }
+        SqlExpr::UnaryOp { expr: inner, .. } => contains_row_value(inner),
+        SqlExpr::Between {
+            expr: inner,
+            low,
+            high,
+            ..
+        } => contains_row_value(inner) || contains_row_value(low) || contains_row_value(high),
+        SqlExpr::IsNull(inner)
+        | SqlExpr::IsNotNull(inner)
+        | SqlExpr::IsTrue(inner)
+        | SqlExpr::IsFalse(inner)
+        | SqlExpr::IsNotTrue(inner)
+        | SqlExpr::IsNotFalse(inner)
+        | SqlExpr::IsUnknown(inner)
+        | SqlExpr::IsNotUnknown(inner) => contains_row_value(inner),
+        _ => false,
+    }
+}
+
 //  RecExpr<SqlLang> ?sqlparser Expr
 
 pub fn recexpr_to_sql_expr(expr: &RecExpr<SqlLang>, symbols: &SymbolTable) -> SqlExpr {
