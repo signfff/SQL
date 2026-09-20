@@ -3344,6 +3344,49 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             executeContextStatement(state, "INSERT OR IGNORE INTO egraph_syn_hm VALUES(1, 'z', 1)", false);
             executeContextStatement(state, "INSERT OR IGNORE INTO egraph_syn_hm VALUES(5000, 'w', 4)", false);
         }
+        // sqlite3Update takes a different path when the statement assigns to the rowid or to the
+        // primary key, and the rowid has four spellings that all have to be recognised.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_ur", true);
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_ur2", true);
+        if (executeContextStatement(state, "CREATE TABLE egraph_syn_ur(k INTEGER PRIMARY KEY, v TEXT)", true)) {
+            executeContextStatement(state,
+                    "INSERT INTO egraph_syn_ur(k, v) VALUES(1, 'a'), (2, 'b'), (3, 'c'), (4, 'd')", false);
+            executeContextStatement(state, "CREATE INDEX IF NOT EXISTS egraph_syn_ur_v ON egraph_syn_ur(v)",
+                    false);
+            executeContextStatement(state, "UPDATE egraph_syn_ur SET k = k + 1000 WHERE k = 1", false);
+            executeContextStatement(state, "UPDATE egraph_syn_ur SET rowid = rowid + 5000 WHERE k = 2", false);
+            executeContextStatement(state, "UPDATE egraph_syn_ur SET _rowid_ = _rowid_ + 9000 WHERE k = 3",
+                    false);
+            executeContextStatement(state, "UPDATE egraph_syn_ur SET oid = oid + 11000 WHERE k = 4", false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_syn_ur", false);
+        }
+        if (executeContextStatement(state,
+                "CREATE TABLE egraph_syn_ur2(a TEXT, b INT, PRIMARY KEY(a, b)) WITHOUT ROWID", true)) {
+            executeContextStatement(state,
+                    "INSERT INTO egraph_syn_ur2(a, b) VALUES('p', 1), ('q', 2), ('r', 3)", false);
+            executeContextStatement(state, "UPDATE egraph_syn_ur2 SET a = a || 'x' WHERE b = 1", false);
+            executeContextStatement(state, "UPDATE egraph_syn_ur2 SET b = b + 1000 WHERE b = 2", false);
+            executeContextStatement(state, "UPDATE egraph_syn_ur2 SET a = a, b = b WHERE b = 3", false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_syn_ur2", false);
+        }
+        // A generated column that reaches itself is reported through COLFLAG_BUSY, and a chain of
+        // them makes sqlite3ExprCodeTarget recurse before it can decide.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_gl", true);
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_gl2", true);
+        executeContextStatement(state,
+                "CREATE TABLE egraph_syn_gl(a INT, b INT AS (c + 1), c INT AS (b + 1))", false);
+        if (executeContextStatement(state,
+                "CREATE TABLE egraph_syn_gl2(a INT, b INT AS (a + 1), c INT AS (b + 1), d INT AS (c + 1), "
+                        + "e INT AS (d + 1), s INT GENERATED ALWAYS AS (a * 2) STORED)",
+                true)) {
+            executeContextStatement(state, "INSERT INTO egraph_syn_gl2(a) VALUES(1), (2), (3)", false);
+            executeContextStatement(state, "UPDATE egraph_syn_gl2 SET a = a + 1", false);
+            executeContextStatement(state, "CREATE INDEX IF NOT EXISTS egraph_syn_gl2_e ON egraph_syn_gl2(e)",
+                    false);
+            executeContextStatement(state,
+                    "SELECT count(*), sum(b), sum(c), sum(d), sum(e), sum(s) FROM egraph_syn_gl2", false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_syn_gl2 WHERE e > 0", false);
+        }
         // ALTER forms, including renaming a virtual table (OP_VRename).
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt", true);
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt2", true);
@@ -3859,6 +3902,16 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             executeContextStatement(state, "PRAGMA egraph_enc.optimize(0xfffe)", false);
             executeContextStatement(state, "PRAGMA egraph_enc.table_list", false);
             executeContextStatement(state, "PRAGMA egraph_enc.integrity_check(2)", false);
+            // Every text value read out of a UTF-16 database by a UTF-8 connection has to be
+            // translated, which is the only way into sqlite3VdbeMemTranslate.
+            executeContextStatement(state,
+                    "SELECT replace(a, 'l', 'L'), trim(a, 'ho'), ltrim(b), rtrim(b), "
+                            + "printf('%s|%s', a, b), json_quote(a), CAST(a AS BLOB), CAST(b AS TEXT) "
+                            + "FROM egraph_enc.u",
+                    false);
+            executeContextStatement(state, "CREATE INDEX IF NOT EXISTS egraph_enc.u_a ON u(a)", false);
+            executeContextStatement(state,
+                    "SELECT count(*) FROM egraph_enc.u WHERE a > 'a' AND a COLLATE NOCASE <> 'X'", false);
             executeContextStatement(state, "DETACH DATABASE egraph_enc", false);
         }
         // Reading these back is the branch; the values written are the defaults, so the connection
@@ -3983,6 +4036,76 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                     "SELECT count(*) FROM egraph_heavy.sk WHERE c IN (1, 2000, 3999)",
                     "SELECT count(*) FROM egraph_heavy.sk WHERE b = 700 OR c = 2000" }) {
                     executeContextStatement(state, skipped, false);
+                }
+            }
+
+            // fts3EvalDeferredPhrase only runs when a token is so common that FTS3 refuses to walk
+            // its doclist and defers it to a post-filter. Three thousand documents that all share
+            // one token is what crosses that threshold; the four hundred used elsewhere do not.
+            if (executeContextStatement(state, "CREATE VIRTUAL TABLE egraph_heavy.dd USING fts4(x)", false)) {
+                executeContextStatement(state,
+                        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i + 1 FROM n WHERE i < 3000) "
+                                + "INSERT INTO egraph_heavy.dd(x) SELECT "
+                                + "'ubiquitous ubiquitous ubiquitous ubiquitous token' || (i %% 7) FROM n",
+                        false);
+                executeContextStatement(state, "INSERT INTO egraph_heavy.dd(dd) VALUES('optimize')", false);
+                for (String deferred : new String[] {
+                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH '\"ubiquitous token1\"'",
+                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH 'ubiquitous token2'",
+                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH '\"ubiquitous ubiquitous token3\"'",
+                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH 'ubiquitous NEAR/3 token4'",
+                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH 'ubiquitous AND token5 AND token6'",
+                    "SELECT matchinfo(dd, 'pcxnal') FROM egraph_heavy.dd "
+                            + "WHERE dd MATCH 'ubiquitous token1' LIMIT 2" }) {
+                    executeContextStatement(state, deferred, false);
+                }
+            }
+            // sqlite3WindowCodeStep walks the frame differently for every shape, and RANGE and
+            // GROUPS over a partition need enough rows for the boundaries to move at all.
+            if (executeContextStatement(state, "CREATE TABLE egraph_heavy.wk(a INT, b INT, c TEXT)", false)) {
+                executeContextStatement(state,
+                        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i + 1 FROM n WHERE i < 300) "
+                                + "INSERT INTO egraph_heavy.wk SELECT i %% 10, i, 'w' || i FROM n",
+                        false);
+                for (String frame : new String[] {
+                    "PARTITION BY a ORDER BY b RANGE BETWEEN 5 PRECEDING AND 5 FOLLOWING",
+                    "PARTITION BY a ORDER BY b RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING",
+                    "ORDER BY b RANGE BETWEEN UNBOUNDED PRECEDING AND 3 PRECEDING",
+                    "ORDER BY b RANGE BETWEEN 3 FOLLOWING AND UNBOUNDED FOLLOWING",
+                    "ORDER BY b GROUPS BETWEEN 2 PRECEDING AND 2 FOLLOWING",
+                    "ORDER BY a GROUPS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW",
+                    "ORDER BY a GROUPS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING",
+                    "ORDER BY b ROWS BETWEEN 2 FOLLOWING AND 5 FOLLOWING",
+                    "ORDER BY b ROWS BETWEEN 5 PRECEDING AND 2 PRECEDING",
+                    "PARTITION BY a ORDER BY b GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING "
+                            + "EXCLUDE CURRENT ROW",
+                    "ORDER BY b RANGE BETWEEN 2 PRECEDING AND 2 FOLLOWING EXCLUDE TIES",
+                    "ORDER BY b GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING EXCLUDE GROUP" }) {
+                    executeContextStatement(state,
+                            "SELECT count(*) FROM (SELECT sum(b) OVER (" + frame + ") FROM egraph_heavy.wk)",
+                            false);
+                }
+                executeContextStatement(state,
+                        "SELECT count(*) FROM (SELECT sum(b) FILTER (WHERE a > 3) OVER (ORDER BY b "
+                                + "GROUPS BETWEEN 1 PRECEDING AND 1 FOLLOWING) FROM egraph_heavy.wk)",
+                        false);
+            }
+            // A virtual table that says it will handle an IN constraint itself makes the planner
+            // emit OP_VInitIn, and a module that reports bOmitOffset skips the OFFSET counter.
+            if (executeContextStatement(state,
+                    "CREATE VIRTUAL TABLE egraph_heavy.vr USING rtree(id, x0, x1, y0, y1)", false)) {
+                executeContextStatement(state,
+                        "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i + 1 FROM n WHERE i < 300) "
+                                + "INSERT INTO egraph_heavy.vr SELECT i, i * 1.0, i * 1.0 + 5, "
+                                + "i * 2.0, i * 2.0 + 5 FROM n",
+                        false);
+                for (String vq : new String[] {
+                    "SELECT count(*) FROM egraph_heavy.vr WHERE id IN (1, 2, 3, 4, 5)",
+                    "SELECT count(*) FROM egraph_heavy.vr WHERE id IN (1, 50, 100) AND x0 > 0",
+                    "SELECT count(*) FROM (SELECT id FROM egraph_heavy.vr WHERE x0 >= 0 LIMIT 10 OFFSET 20)",
+                    "SELECT count(*) FROM (SELECT id FROM egraph_heavy.vr WHERE x0 >= 0 AND x1 <= 1000 "
+                            + "LIMIT 3 OFFSET 1)" }) {
+                    executeContextStatement(state, vq, false);
                 }
             }
             executeContextStatement(state, "DETACH DATABASE egraph_heavy", false);
