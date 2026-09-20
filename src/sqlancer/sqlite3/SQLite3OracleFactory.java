@@ -3543,6 +3543,27 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             executeContextStatement(state, "PRAGMA egraph_uri.integrity_check", false);
             executeContextStatement(state, "DETACH DATABASE egraph_uri", false);
         }
+        // Overflow pages, freelist reuse and the page mover need rows wider than a page, and they
+        // are built in an attached database on purpose: the corpus snapshot reads main's
+        // sqlite_master only, so a 480 KB probe table here never reaches replay-all.sql. Measured
+        // 94 lines, more than the same work in main, because memdb's own paging is on the way.
+        if (executeContextStatement(state, "ATTACH DATABASE 'file:egraph_ovf?vfs=memdb' AS egraph_ovf", false)) {
+            executeContextStatement(state,
+                    "CREATE TABLE IF NOT EXISTS egraph_ovf.big(k INTEGER PRIMARY KEY, v BLOB, w TEXT)", false);
+            executeContextStatement(state,
+                    "INSERT INTO egraph_ovf.big(k, v, w) SELECT x, zeroblob(12000), hex(zeroblob(4000)) FROM "
+                            + "(WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 40) "
+                            + "SELECT x FROM n)",
+                    false);
+            executeContextStatement(state, "UPDATE egraph_ovf.big SET v = zeroblob(24000) WHERE k % 3 = 0", false);
+            executeContextStatement(state, "DELETE FROM egraph_ovf.big WHERE k % 2 = 0", false);
+            executeContextStatement(state, "CREATE INDEX IF NOT EXISTS egraph_ovf.big_w ON big(w)", false);
+            executeContextStatement(state, "SELECT count(*) FROM egraph_ovf.big WHERE w > '0'", false);
+            executeContextStatement(state, "PRAGMA egraph_ovf.integrity_check", false);
+            executeContextStatement(state, "PRAGMA egraph_ovf.freelist_count", false);
+            executeContextStatement(state, "VACUUM egraph_ovf", false);
+            executeContextStatement(state, "DETACH DATABASE egraph_ovf", false);
+        }
         executeContextStatement(state, "PRAGMA wal_checkpoint(FULL)", false);
         executeContextStatement(state, "PRAGMA optimize", false);
         if (ATTACH_CONTEXT_COUNT.incrementAndGet() % 256 == 0) {
