@@ -3253,6 +3253,49 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             executeContextStatement(state, "SELECT count(*), typeof(f) FROM egraph_syn_st GROUP BY typeof(f)",
                     false);
         }
+        // lookupName resolves a USING column of a RIGHT or FULL join through a separate path that
+        // has to merge both sides, and the ambiguous-name errors below are branches of their own.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_ja", true);
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_jb", true);
+        if (executeContextStatement(state, "CREATE TABLE egraph_syn_ja(k INT, v TEXT, w INT)", true)
+                && executeContextStatement(state, "CREATE TABLE egraph_syn_jb(k INT, v TEXT, x INT)", true)) {
+            executeContextStatement(state,
+                    "INSERT INTO egraph_syn_ja VALUES(1, 'a', 10), (2, 'b', 20), (3, 'c', 30)", false);
+            executeContextStatement(state,
+                    "INSERT INTO egraph_syn_jb VALUES(2, 'B', 200), (3, 'C', 300), (4, 'D', 400)", false);
+            for (String joined : new String[] {
+                "SELECT count(k) FROM egraph_syn_ja FULL OUTER JOIN egraph_syn_jb USING (k)",
+                "SELECT count(v) FROM egraph_syn_ja FULL OUTER JOIN egraph_syn_jb USING (k, v)",
+                "SELECT count(k) FROM egraph_syn_ja RIGHT JOIN egraph_syn_jb USING (k)",
+                "SELECT count(*) FROM egraph_syn_ja RIGHT JOIN egraph_syn_jb USING (k, v)",
+                "SELECT count(k) FROM egraph_syn_ja NATURAL FULL OUTER JOIN egraph_syn_jb",
+                "SELECT count(k) FROM egraph_syn_ja NATURAL RIGHT OUTER JOIN egraph_syn_jb",
+                "SELECT count(*) FROM egraph_syn_ja FULL JOIN egraph_syn_jb USING (k) WHERE k IS NOT NULL",
+                "SELECT count(k) FROM (egraph_syn_ja FULL JOIN egraph_syn_jb USING (k)) "
+                        + "FULL JOIN egraph_syn_ja AS jc USING (k)",
+                "SELECT count(rowid) FROM egraph_syn_ja RIGHT JOIN egraph_syn_jb USING (k)",
+                "SELECT count(*) FROM egraph_syn_ja AS x FULL JOIN egraph_syn_jb AS y USING (k) "
+                        + "LEFT JOIN egraph_syn_ja AS z USING (k)",
+                "SELECT k FROM egraph_syn_ja FULL JOIN egraph_syn_jb USING (k) GROUP BY k HAVING count(*) > 0" }) {
+                executeContextStatement(state, joined, false);
+            }
+        }
+        // OE_Replace against a NOT NULL column, and the second pass that generated columns force.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_rg", true);
+        if (executeContextStatement(state,
+                "CREATE TABLE egraph_syn_rg(a INTEGER PRIMARY KEY, b INT NOT NULL ON CONFLICT REPLACE DEFAULT 7, "
+                        + "c TEXT NOT NULL DEFAULT 'dflt', g AS (b * 2), "
+                        + "h INT GENERATED ALWAYS AS (b + 1) STORED)",
+                true)) {
+            executeContextStatement(state, "INSERT INTO egraph_syn_rg(a, b, c) VALUES(1, 1, 'x'), (2, 2, 'y')",
+                    false);
+            executeContextStatement(state, "INSERT INTO egraph_syn_rg(a, b, c) VALUES(3, NULL, 'z')", false);
+            executeContextStatement(state, "INSERT OR REPLACE INTO egraph_syn_rg(a, b, c) VALUES(1, NULL, 'w')",
+                    false);
+            executeContextStatement(state, "UPDATE egraph_syn_rg SET b = NULL WHERE a = 2", false);
+            executeContextStatement(state, "UPDATE OR REPLACE egraph_syn_rg SET b = NULL WHERE a = 2", false);
+            executeContextStatement(state, "SELECT count(*), sum(g), sum(h) FROM egraph_syn_rg", false);
+        }
         // ALTER forms, including renaming a virtual table (OP_VRename).
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt", true);
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_syn_vt2", true);
@@ -3837,7 +3880,44 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                     executeContextStatement(state, planned, false);
                 }
             }
+            // sqlite3Fts5GetVarint decodes up to nine bytes and only a large rowid gets past the
+            // first two, so the rowids here step over every varint width boundary.
+            if (executeContextStatement(state, "CREATE VIRTUAL TABLE egraph_heavy.fv USING fts5(x)", false)) {
+                for (String rowid : new String[] {"1", "127", "128", "16383", "16384", "2097151", "2097152",
+                    "268435455", "268435456", "34359738367", "34359738368", "4398046511103",
+                    "562949953421311", "72057594037927935", "9223372036854775807" }) {
+                    executeContextStatement(state,
+                            "INSERT INTO egraph_heavy.fv(rowid, x) VALUES(" + rowid + ", 'a b c')", false);
+                }
+                executeContextStatement(state, "INSERT INTO egraph_heavy.fv(fv) VALUES('optimize')", false);
+                executeContextStatement(state, "SELECT count(*) FROM egraph_heavy.fv WHERE fv MATCH 'b AND c'",
+                        false);
+                executeContextStatement(state, "SELECT count(*) FROM egraph_heavy.fv WHERE fv MATCH '\"a b\"'",
+                        false);
+                executeContextStatement(state,
+                        "CREATE VIRTUAL TABLE egraph_heavy.fvv USING fts5vocab(fv, instance)", false);
+                executeContextStatement(state, "SELECT count(*) FROM egraph_heavy.fvv", false);
+            }
             executeContextStatement(state, "DETACH DATABASE egraph_heavy", false);
+        }
+        // vdbeCommit only builds a super-journal when a transaction dirties more than one database
+        // held in a real file, so this one attachment cannot be a memdb. It is a single small file
+        // reused on every refresh rather than a new one each time.
+        if (executeContextStatement(state, "ATTACH DATABASE 'egraph_superjournal.db' AS egraph_sj", false)) {
+            executeContextStatement(state,
+                    "CREATE TABLE IF NOT EXISTS egraph_sj.x(k INTEGER PRIMARY KEY, v TEXT)", false);
+            executeContextStatement(state, "DELETE FROM egraph_sj.x", false);
+            for (String tx : new String[] {
+                "BEGIN", "INSERT INTO egraph_sj.x(v) VALUES('a'), ('b')",
+                "INSERT INTO egraph_attach_probe(id, value, note) VALUES(9, 90, 'sj')", "COMMIT",
+                "BEGIN", "UPDATE egraph_sj.x SET v = v || '1'",
+                "UPDATE egraph_attach_probe SET value = value WHERE id = 9", "COMMIT",
+                "BEGIN", "INSERT INTO egraph_sj.x(v) VALUES('c')",
+                "DELETE FROM egraph_attach_probe WHERE id = 9", "ROLLBACK" }) {
+                executeContextStatement(state, tx, false);
+            }
+            executeContextStatement(state, "DELETE FROM egraph_attach_probe WHERE id = 9", false);
+            executeContextStatement(state, "DETACH DATABASE egraph_sj", false);
         }
         executeContextStatement(state, "PRAGMA wal_checkpoint(FULL)", false);
         executeContextStatement(state, "PRAGMA optimize", false);
@@ -4742,6 +4822,47 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             executeContextStatement(state,
                     "SELECT a, b, c FROM egraph_xfer_dst WHERE a >= 0 ORDER BY a LIMIT 8", false);
         }
+
+        // Every way a document can be malformed is its own bail-out inside
+        // jsonTranslateTextToBlob, and a blob that is not valid JSONB is a separate walk through
+        // jsonbValidityCheck - including the JSON5 integer forms, which have their own case there.
+        // These are probes, not part of any compared query, so they cost nothing per check.
+        executeContextStatement(state, "SELECT json_valid('{') + json_valid('}') + json_valid('[') + json_valid(']')", false);
+        executeContextStatement(state, "SELECT json_valid('{,}') + json_valid('[,]') + json_valid('{\"a\"}') + json_valid('{\"a\":}')", false);
+        executeContextStatement(state, "SELECT json_valid('{:1}') + json_valid('{\"a\":1,}x') + json_valid('{\"a\" 1}') + json_valid('[1 2]')", false);
+        executeContextStatement(state, "SELECT json_valid('[\"a\" \"b\"]') + json_valid('{\"a\":1}}') + json_valid('[[[[') + json_valid('\"unterminated')", false);
+        executeContextStatement(state, "SELECT json_valid('''unterminated') + json_valid('{a b:1}') + json_valid('{\"a\":01}') + json_valid('{\"a\":1e}')", false);
+        executeContextStatement(state, "SELECT json_valid('{\"a\":1e+}') + json_valid('{\"a\":.}') + json_valid('{\"a\":-}') + json_valid('{\"a\":+}')", false);
+        executeContextStatement(state, "SELECT json_valid('{\"a\":0x}') + json_valid('{\"a\":0xZ}') + json_valid('{\"a\":tru}') + json_valid('{\"a\":fals}')", false);
+        executeContextStatement(state, "SELECT json_valid('{\"a\":nul}') + json_valid('{\"a\":Infinit}') + json_valid('{\"a\":Na}') + json_valid('[1,2,3')", false);
+        executeContextStatement(state, "SELECT json_valid('{\"a\":[1,2}') + json_valid('nan') + json_valid('inf') + json_valid('--1')", false);
+        executeContextStatement(state, "SELECT json_valid('1.2.3') + json_valid('{\"a\":1}{\"b\":2}') + json_valid('[] []')", false);
+        executeContextStatement(state, "SELECT json_valid(x'', 8) + json_valid(x'00', 8) + json_valid(x'01', 8) + json_valid(x'02', 8) + json_valid(x'03', 8)", false);
+        executeContextStatement(state, "SELECT json_valid(x'04', 8) + json_valid(x'05', 8) + json_valid(x'06', 8) + json_valid(x'07', 8) + json_valid(x'08', 8)", false);
+        executeContextStatement(state, "SELECT json_valid(x'09', 8) + json_valid(x'0a', 8) + json_valid(x'0b', 8) + json_valid(x'0c', 8) + json_valid(x'0d', 8)", false);
+        executeContextStatement(state, "SELECT json_valid(x'0e', 8) + json_valid(x'0f', 8) + json_valid(x'1c', 8) + json_valid(x'2c', 8) + json_valid(x'3c', 8)", false);
+        executeContextStatement(state, "SELECT json_valid(x'4c30', 8) + json_valid(x'5c3078', 8) + json_valid(x'6c307a', 8) + json_valid(x'7c', 8) + json_valid(x'8c00', 8)", false);
+        executeContextStatement(state, "SELECT json_valid(x'9c0000', 8) + json_valid(x'ac000000', 8) + json_valid(x'bc', 8) + json_valid(x'cc', 8) + json_valid(x'0b2d', 8)", false);
+        executeContextStatement(state, "SELECT json_valid(x'0b30', 8) + json_valid(x'0b3078', 8) + json_valid(x'0b307a', 8) + json_valid(x'0c2d30', 8) + json_valid(x'0c2b', 8)", false);
+        executeContextStatement(state,
+                "SELECT json(jsonb('{a:0x1f, b:0X7FFFFFFF, c:-0xff, d:+0x10}')), "
+                        + "json(jsonb('[0x0, 0xff, 0xffff, 0x7fffffffffffffff]')), "
+                        + "json(jsonb('{a:+1, b:-1, c:+1.5, d:-1.5, e:.5, f:-.5, g:5., h:-5.}')), "
+                        + "json(jsonb('{a:1e5, b:1E5, c:1e+5, d:1e-5, e:-1e5}'))",
+                false);
+        executeContextStatement(state,
+                "SELECT json_valid(substr(jsonb('{\"a\":[1,2,3],\"b\":\"xyz\"}'), 1, 3), 8) "
+                        + "+ json_valid(substr(jsonb('{\"a\":[1,2,3],\"b\":\"xyz\"}'), 1, 6), 8) "
+                        + "+ json_valid(substr(jsonb('{\"a\":[1,2,3],\"b\":\"xyz\"}'), 2, 12), 8) "
+                        + "+ json_valid(jsonb('{\"a\":1}') || x'ff', 8) "
+                        + "+ json_valid(x'ff' || jsonb('{\"a\":1}'), 8)",
+                false);
+        // Whitespace between tokens has a branch per space character in the skipper.
+        executeContextStatement(state,
+                "SELECT json('{ \"a\" : 1 , \"b\" : 2 }'), json('{' || char(9) || '\"a\"' || char(9) "
+                        + "|| ':' || char(9) || '1}'), json('{' || char(10) || '\"a\":1' || char(10) || '}'), "
+                        + "json('{' || char(13) || '\"a\":1' || char(13) || '}'), json('   {\"a\":1}   ')",
+                false);
         return ok;
     }
 
