@@ -2968,6 +2968,33 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         executeContextStatement(state, "DROP TABLE IF EXISTS egraph_fts5tri", true);
         boolean tri = executeContextStatement(state,
                 "CREATE VIRTUAL TABLE egraph_fts5tri USING fts5(x, tokenize='trigram')", false);
+        // The porter stemmer is a chain of steps keyed off fixed suffix lists, and only the
+        // suffixes actually present in a document reach their branch. These documents name every
+        // suffix each step tests for, which is worth 137 lines; the three tokenizers above share
+        // none of that code.
+        executeContextStatement(state, "DROP TABLE IF EXISTS egraph_fts5por", true);
+        if (executeContextStatement(state, "CREATE VIRTUAL TABLE egraph_fts5por USING fts5(x, tokenize='porter')",
+                false)) {
+            executeContextStatement(state,
+                    "INSERT INTO egraph_fts5por(x) VALUES "
+                            + "('relational conditional rational'), "
+                            + "('valenci hesitanci digitizer'), "
+                            + "('conformabli radicalli differentli vileli analogousli'), "
+                            + "('vietnamization predication operator feudalism'), "
+                            + "('decisiveness hopefulness callousness'), "
+                            + "('formaliti sensitiviti sensibiliti'), "
+                            + "('triplicate formative formalize electricity electrical'), "
+                            + "('hopeful goodness revival allowance inference airliner'), "
+                            + "('gaily plastered bowdlerize effective bushes'), "
+                            + "('agreed disabled matting mating meeting milling messing'), "
+                            + "('running jumped happiest sized troubled tanned falling')",
+                    false);
+            for (String stem : new String[] {"relate", "condition", "valence", "digitize", "conform", "vietnam",
+                "decis", "formal", "electric", "hope", "run", "agree" }) {
+                executeContextStatement(state,
+                        "SELECT count(*) FROM egraph_fts5por WHERE egraph_fts5por MATCH '" + stem + "'", false);
+            }
+        }
         if (!ok) {
             return false;
         }
@@ -3564,6 +3591,42 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             executeContextStatement(state, "VACUUM egraph_ovf", false);
             executeContextStatement(state, "DETACH DATABASE egraph_ovf", false);
         }
+        // The setting forms of the storage PRAGMAs, and a UTF-16 database. Both belong on a
+        // throwaway attachment: encoding can only be chosen before the first table exists, and
+        // nothing here is allowed to change what a query against main returns. The UTF-16 text
+        // functions are what reach sqlite3VdbeMemTranslate, which no UTF-8 database enters.
+        for (String encoding : new String[] {"UTF-16le", "UTF-16be" }) {
+            if (!executeContextStatement(state, "ATTACH DATABASE 'file:egraph_enc?vfs=memdb' AS egraph_enc", false)) {
+                continue;
+            }
+            executeContextStatement(state, "PRAGMA egraph_enc.encoding = '" + encoding + "'", false);
+            executeContextStatement(state, "PRAGMA egraph_enc.encoding", false);
+            executeContextStatement(state, "CREATE TABLE egraph_enc.u(a TEXT, b TEXT)", false);
+            executeContextStatement(state,
+                    "INSERT INTO egraph_enc.u(a, b) VALUES('hello', 'world'), ('cafe', 'naive')", false);
+            executeContextStatement(state,
+                    "SELECT count(*), max(a), length(b), upper(a), lower(b), hex(a), substr(a, 1, 2), "
+                            + "instr(a, 'e'), group_concat(a || '-' || b) FROM egraph_enc.u",
+                    false);
+            executeContextStatement(state,
+                    "SELECT count(*) FROM egraph_enc.u WHERE a LIKE 'h%' AND b GLOB 'w*' "
+                            + "AND a COLLATE NOCASE <> 'X'",
+                    false);
+            executeContextStatement(state, "PRAGMA egraph_enc.secure_delete = FAST", false);
+            executeContextStatement(state, "PRAGMA egraph_enc.secure_delete", false);
+            executeContextStatement(state, "PRAGMA egraph_enc.journal_size_limit = 65536", false);
+            executeContextStatement(state, "PRAGMA egraph_enc.default_cache_size = 3000", false);
+            executeContextStatement(state, "PRAGMA egraph_enc.locking_mode = EXCLUSIVE", false);
+            executeContextStatement(state, "PRAGMA egraph_enc.locking_mode = NORMAL", false);
+            executeContextStatement(state, "PRAGMA egraph_enc.optimize(0xfffe)", false);
+            executeContextStatement(state, "PRAGMA egraph_enc.table_list", false);
+            executeContextStatement(state, "PRAGMA egraph_enc.integrity_check(2)", false);
+            executeContextStatement(state, "DETACH DATABASE egraph_enc", false);
+        }
+        // Reading these back is the branch; the values written are the defaults, so the connection
+        // is left exactly as it was found.
+        executeContextStatement(state, "PRAGMA hard_heap_limit", false);
+        executeContextStatement(state, "PRAGMA soft_heap_limit", false);
         executeContextStatement(state, "PRAGMA wal_checkpoint(FULL)", false);
         executeContextStatement(state, "PRAGMA optimize", false);
         if (ATTACH_CONTEXT_COUNT.incrementAndGet() % 256 == 0) {
