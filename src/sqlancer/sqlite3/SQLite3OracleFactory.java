@@ -3222,11 +3222,12 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         // branch no spelled-out pragma reaches. The boolean pragmas below are each set and put back
         // in the same breath; reverse_unordered_selects in particular must not be left on, since it
         // would change the row order the oracle compares. writable_schema is deliberately absent:
-        // it lets a statement corrupt sqlite_master, which has no place in a correctness tool.
+        // it lets a statement corrupt sqlite_master, which has no place in a correctness tool. So is
+        // case_sensitive_like: setting it either way re-registers LIKE without SQLITE_DETERMINISTIC,
+        // after which any index using LIKE makes the schema read back as corrupt.
         for (String pragma : new String[] {
             "PRAGMA egraph_unknown_pragma", "PRAGMA egraph_unknown_pragma = 5",
             "PRAGMA main.egraph_another_unknown = 'x'",
-            "PRAGMA case_sensitive_like = ON", "PRAGMA case_sensitive_like = OFF",
             "PRAGMA short_column_names = OFF", "PRAGMA short_column_names = ON",
             "PRAGMA full_column_names = ON", "PRAGMA full_column_names = OFF",
             "PRAGMA trusted_schema = OFF", "PRAGMA trusted_schema = ON",
@@ -4118,24 +4119,26 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 }
             }
 
-            // fts3EvalDeferredPhrase only runs when a token is so common that FTS3 refuses to walk
-            // its doclist and defers it to a post-filter. Three thousand documents that all share
-            // one token is what crosses that threshold; the four hundred used elsewhere do not.
+            // fts3EvalDeferredPhrase only runs when FTS3 defers a token to a post-filter, and it does
+            // that only if the token's doclist spills onto at least (documents matching the rarest
+            // phrase) x (pages per document) overflow pages. Three thousand documents give the common
+            // token a few overflow pages; the other side has to be a word found in one document, or
+            // the threshold is hundreds of pages and nothing is deferred.
             if (executeContextStatement(state, "CREATE VIRTUAL TABLE egraph_heavy.dd USING fts4(x)", false)) {
                 executeContextStatement(state,
                         "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i + 1 FROM n WHERE i < 3000) "
                                 + "INSERT INTO egraph_heavy.dd(x) SELECT "
-                                + "'ubiquitous ubiquitous ubiquitous ubiquitous token' || (i %% 7) FROM n",
+                                + "'ubiquitous ubiquitous ubiquitous ubiquitous token' || (i % 7) "
+                                + "|| CASE WHEN i % 1000 = 0 THEN ' singular' || i ELSE '' END FROM n",
                         false);
                 executeContextStatement(state, "INSERT INTO egraph_heavy.dd(dd) VALUES('optimize')", false);
                 for (String deferred : new String[] {
-                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH '\"ubiquitous token1\"'",
-                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH 'ubiquitous token2'",
-                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH '\"ubiquitous ubiquitous token3\"'",
-                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH 'ubiquitous NEAR/3 token4'",
-                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH 'ubiquitous AND token5 AND token6'",
-                    "SELECT matchinfo(dd, 'pcxnal') FROM egraph_heavy.dd "
-                            + "WHERE dd MATCH 'ubiquitous token1' LIMIT 2" }) {
+                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH 'ubiquitous singular1000'",
+                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH '\"ubiquitous token6\" singular2000'",
+                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH 'ubiquitous NEAR/3 singular3000'",
+                    "SELECT count(*) FROM egraph_heavy.dd WHERE dd MATCH '\"ubiquitous ubiquitous\" singular1000'",
+                    "SELECT snippet(dd), offsets(dd), matchinfo(dd, 'pcxnal') FROM egraph_heavy.dd "
+                            + "WHERE dd MATCH 'ubiquitous singular2000'" }) {
                     executeContextStatement(state, deferred, false);
                 }
             }
@@ -4144,7 +4147,7 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             if (executeContextStatement(state, "CREATE TABLE egraph_heavy.wk(a INT, b INT, c TEXT)", false)) {
                 executeContextStatement(state,
                         "WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i + 1 FROM n WHERE i < 300) "
-                                + "INSERT INTO egraph_heavy.wk SELECT i %% 10, i, 'w' || i FROM n",
+                                + "INSERT INTO egraph_heavy.wk SELECT i % 10, i, 'w' || i FROM n",
                         false);
                 for (String frame : new String[] {
                     "PARTITION BY a ORDER BY b RANGE BETWEEN 5 PRECEDING AND 5 FOLLOWING",
@@ -4190,22 +4193,28 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             executeContextStatement(state, "DETACH DATABASE egraph_heavy", false);
         }
         // vdbeCommit only builds a super-journal when a transaction dirties more than one database
-        // held in a real file, so this one attachment cannot be a memdb. It is a single small file
-        // reused on every refresh rather than a new one each time.
+        // held in a real file with a rollback journal; a database in WAL mode or with synchronous=OFF
+        // does not count. The main database is often in WAL mode here, so the transaction writes two
+        // attached files set to DELETE mode instead. They are small files reused on every refresh.
         if (executeContextStatement(state, "ATTACH DATABASE 'egraph_superjournal.db' AS egraph_sj", false)) {
-            executeContextStatement(state,
-                    "CREATE TABLE IF NOT EXISTS egraph_sj.x(k INTEGER PRIMARY KEY, v TEXT)", false);
-            executeContextStatement(state, "DELETE FROM egraph_sj.x", false);
-            for (String tx : new String[] {
-                "BEGIN", "INSERT INTO egraph_sj.x(v) VALUES('a'), ('b')",
-                "INSERT INTO egraph_attach_probe(id, value, note) VALUES(9, 90, 'sj')", "COMMIT",
-                "BEGIN", "UPDATE egraph_sj.x SET v = v || '1'",
-                "UPDATE egraph_attach_probe SET value = value WHERE id = 9", "COMMIT",
-                "BEGIN", "INSERT INTO egraph_sj.x(v) VALUES('c')",
-                "DELETE FROM egraph_attach_probe WHERE id = 9", "ROLLBACK" }) {
-                executeContextStatement(state, tx, false);
+            if (executeContextStatement(state, "ATTACH DATABASE 'egraph_superjournal2.db' AS egraph_sj2", false)) {
+                for (String setup : new String[] {
+                    "PRAGMA egraph_sj.journal_mode = DELETE", "PRAGMA egraph_sj2.journal_mode = DELETE",
+                    "PRAGMA egraph_sj.synchronous = NORMAL", "PRAGMA egraph_sj2.synchronous = NORMAL",
+                    "CREATE TABLE IF NOT EXISTS egraph_sj.x(k INTEGER PRIMARY KEY, v TEXT)",
+                    "CREATE TABLE IF NOT EXISTS egraph_sj2.y(k INTEGER PRIMARY KEY, v TEXT)",
+                    "DELETE FROM egraph_sj.x", "DELETE FROM egraph_sj2.y" }) {
+                    executeContextStatement(state, setup, false);
+                }
+                for (String tx : new String[] {
+                    "BEGIN", "INSERT INTO egraph_sj.x(v) VALUES('a'), ('b')",
+                    "INSERT INTO egraph_sj2.y(v) VALUES('a')", "COMMIT",
+                    "BEGIN", "UPDATE egraph_sj.x SET v = v || '1'", "UPDATE egraph_sj2.y SET v = v || '1'", "COMMIT",
+                    "BEGIN", "INSERT INTO egraph_sj.x(v) VALUES('c')", "DELETE FROM egraph_sj2.y", "ROLLBACK" }) {
+                    executeContextStatement(state, tx, false);
+                }
+                executeContextStatement(state, "DETACH DATABASE egraph_sj2", false);
             }
-            executeContextStatement(state, "DELETE FROM egraph_attach_probe WHERE id = 9", false);
             executeContextStatement(state, "DETACH DATABASE egraph_sj", false);
         }
         executeContextStatement(state, "PRAGMA wal_checkpoint(FULL)", false);
