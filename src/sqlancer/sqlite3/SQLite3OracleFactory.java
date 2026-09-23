@@ -34,6 +34,7 @@ import sqlancer.sqlite3.ast.SQLite3Constant;
 import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation.BinaryComparisonOperator;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3ColumnName;
+import sqlancer.sqlite3.ast.SQLite3RowValueExpression;
 import sqlancer.sqlite3.ast.SQLite3Expression.Sqlite3BinaryOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.Sqlite3BinaryOperation.BinaryOperator;
 import sqlancer.sqlite3.ast.SQLite3Expression.Join.JoinType;
@@ -181,14 +182,22 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 // existing rule set can reach here. Prepared before the report bucket is chosen
                 // because it can fail (no named column, no non-blob row) and then this check has to
                 // fall back to the random path.
-                IndexedPredicate indexedPredicate = !chosen.isVirtual() && INDEXED_PREDICATE_PERCENT > 0
+                // Predicates built around a subquery: a scalar IN, and a row value compared against
+                // one. Measured on the 0921 long run, neither shape occurred once among the 52258
+                // base queries, while both carry bug reports of their own. Tried first because it
+                // builds the whole WHERE, like the join path below.
+                boolean subqueryPredicate = !chosen.isVirtual() && SUBQUERY_PREDICATE_PERCENT > 0
+                        && Randomly.getNotCachedInteger(0, 100) < SUBQUERY_PREDICATE_PERCENT
+                        && chosen.getColumns().size() >= 1;
+                IndexedPredicate indexedPredicate = !subqueryPredicate && !chosen.isVirtual()
+                        && INDEXED_PREDICATE_PERCENT > 0
                         && Randomly.getNotCachedInteger(0, 100) < INDEXED_PREDICATE_PERCENT
                                 ? prepareIndexedPredicate(state, chosen)
                                 : null;
                 // Tried only when the indexed-constant path did not claim this check, so the two
                 // never fight over the WHERE and each keeps its own control arm in the histogram.
-                PartialIndexPredicate partialIndexPredicate = indexedPredicate == null && !chosen.isVirtual()
-                        && PARTIAL_INDEX_PERCENT > 0
+                PartialIndexPredicate partialIndexPredicate = !subqueryPredicate && indexedPredicate == null
+                        && !chosen.isVirtual() && PARTIAL_INDEX_PERCENT > 0
                         && Randomly.getNotCachedInteger(0, 100) < PARTIAL_INDEX_PERCENT
                                 ? preparePartialIndexPredicate(state, chosen)
                                 : null;
@@ -196,7 +205,8 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 // the WHERE around one table's index; here the predicate spans the joined tables
                 // instead. Virtual tables stay out - the R-Tree path has its own predicate shape.
                 List<SQLite3Table> joinTables = null;
-                if (indexedPredicate == null && partialIndexPredicate == null && !chosen.isVirtual()
+                if (!subqueryPredicate && indexedPredicate == null && partialIndexPredicate == null
+                        && !chosen.isVirtual()
                         && JOIN_PERCENT > 0 && Randomly.getNotCachedInteger(0, 100) < JOIN_PERCENT) {
                     // Virtual tables are allowed as the joined side. Excluding them left this path
                     // dead: EGRAPH skips empty tables rather than filling them (see
@@ -275,7 +285,9 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                     } else {
                         select.setFromList(configuredGen.getTableRefs());
                     }
-                    if (rtreePushdown) {
+                    if (subqueryPredicate) {
+                        whereCondition = generateSubqueryPredicateWhere(chosen, configuredGen);
+                    } else if (rtreePushdown) {
                         whereCondition = generateRtreePushdownWhere(chosen, coordinateColumns, configuredGen);
                     } else if (indexedPredicate != null) {
                         whereCondition = generateIndexedConstantWhere(indexedPredicate, configuredGen);
@@ -848,6 +860,75 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
      * conjunct: measured, SQLite ignores the partial index as soon as the matching term sits under a
      * NOT or inside an OR, so nesting it would silently put this path back on a full scan.
      */
+    /**
+     * Percentage of base queries whose WHERE is a subquery predicate: {@code c IN (SELECT ...)} or a row value
+     * compared against one.
+     *
+     * <p>
+     * Counted over the 52258 base queries of the 0921 long run: not one contained a row value, an IN over a subquery
+     * or a JOIN. The generator only ever produced comparisons, boolean connectives and arithmetic over one table's
+     * columns. Three of the SQLite bug reports this oracle is measured against live in exactly the shapes that never
+     * appeared - a row value IN with an aggregate in the subquery among them.
+     * </p>
+     *
+     * <p>
+     * The rewrite server has no node for IN, so it keeps such a predicate as one atom and offers only the identity
+     * rewrites. That is the point: those change which plan SQLite picks for the atom without touching its meaning,
+     * and the reports are about the plan the atom compiles to.
+     * </p>
+     *
+     * <p>
+     * Measured over 300 s per setting, on the random path alone: at 0 the rewrites produced more than one plan for
+     * 6.9% of checks, at 30 for 32.9%, at 100 for 88.6%. Throughput rose rather than fell (1230, 3990 and 4665
+     * checks), because a predicate whose subquery reads the queried table is satisfiable by construction and so is
+     * discarded far less often than a random one. 30 is the default: it triples the share of checks that can fail at
+     * all while leaving most of the random path on the other shapes.
+     * </p>
+     */
+    private static final int SUBQUERY_PREDICATE_PERCENT = Integer
+            .parseInt(System.getProperty("egraph.subqueryPredicatePercent", "30"));
+
+    /**
+     * Builds a WHERE of the form {@code c IN (SELECT c FROM t AS alias)} or
+     * {@code (a, b) IN (SELECT a, min(b) FROM t AS alias)}, over the queried table itself so the subquery is
+     * satisfiable by construction - every row of the table satisfies the scalar form, and the row-value form is what
+     * the reports about row values and unique indexes need.
+     */
+    private static SQLite3Expression generateSubqueryPredicateWhere(SQLite3Table table,
+            SQLite3ExpressionGenerator gen) {
+        List<SQLite3Column> columns = table.getColumns();
+        SQLite3Column first = Randomly.fromList(columns);
+        String alias = "egraph_sub";
+        String quotedTable = quoteIdentifier(table.getName());
+        SQLite3Expression predicate;
+        SQLite3Column second = columns.size() > 1 ? Randomly.fromList(columns) : null;
+        if (second != null && !second.getName().equals(first.getName()) && Randomly.getBoolean()) {
+            // The row-value form. An aggregate on the right makes the subquery a single row, which
+            // is the shape the row-value reports use; without it the subquery is the table itself.
+            String right = Randomly.getBoolean()
+                    ? alias + "." + quoteIdentifier(second.getName())
+                    : Randomly.fromOptions("min", "max") + "(" + alias + "." + quoteIdentifier(second.getName()) + ")";
+            String subquery = "SELECT " + alias + "." + quoteIdentifier(first.getName()) + ", " + right + " FROM "
+                    + quotedTable + " AS " + alias;
+            predicate = new SQLite3Expression.InOperation(
+                    new SQLite3RowValueExpression(List.of(new SQLite3ColumnName(first, null),
+                            new SQLite3ColumnName(second, null))),
+                    new SQLite3Expression.Subquery(subquery));
+        } else {
+            String projection = Randomly.getBooleanWithRatherLowProbability()
+                    ? Randomly.fromOptions("min", "max") + "(" + alias + "." + quoteIdentifier(first.getName()) + ")"
+                    : alias + "." + quoteIdentifier(first.getName());
+            String subquery = "SELECT " + projection + " FROM " + quotedTable + " AS " + alias;
+            predicate = new SQLite3Expression.InOperation(new SQLite3ColumnName(first, null),
+                    new SQLite3Expression.Subquery(subquery));
+        }
+        if (Randomly.getBooleanWithRatherLowProbability()) {
+            // A second term the optimiser has to weigh against the subquery when it picks a plan.
+            predicate = new Sqlite3BinaryOperation(predicate, gen.generateBooleanExpression(), BinaryOperator.AND);
+        }
+        return predicate;
+    }
+
     private static SQLite3Expression generatePartialIndexWhere(PartialIndexPredicate prepared,
             SQLite3ExpressionGenerator gen) {
         SQLite3Expression predicate = prepared.predicate;

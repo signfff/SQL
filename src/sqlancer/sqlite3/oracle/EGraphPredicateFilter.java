@@ -8,9 +8,11 @@ import sqlancer.sqlite3.ast.SQLite3Expression;
 import sqlancer.sqlite3.ast.SQLite3Expression.BetweenOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation.BinaryComparisonOperator;
+import sqlancer.sqlite3.ast.SQLite3Expression.InOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3ColumnName;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3PostfixUnaryOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.Sqlite3BinaryOperation;
+import sqlancer.sqlite3.ast.SQLite3RowValueExpression;
 import sqlancer.sqlite3.ast.SQLite3UnaryOperation;
 import sqlancer.sqlite3.schema.SQLite3Schema.SQLite3Column;
 
@@ -506,6 +508,21 @@ public class EGraphPredicateFilter {
                 walk(((SQLite3UnaryOperation) e).getExpression(), depth + 1);
             } else if (e instanceof SQLite3PostfixUnaryOperation) {
                 walk(((SQLite3PostfixUnaryOperation) e).getExpression(), depth + 1);
+            } else if (e instanceof InOperation) {
+                // The rewrite server has no node for IN, so it keeps the whole predicate as one
+                // opaque atom and offers the identity rewrites for it. That is still worth sending:
+                // the atom is where the row-value and IN-subquery reports live.
+                InOperation in = (InOperation) e;
+                walk(in.getLeft(), depth + 1);
+                if (in.getRightExpressionList() != null) {
+                    for (SQLite3Expression right : in.getRightExpressionList()) {
+                        walk(right, depth + 1);
+                    }
+                }
+            } else if (e instanceof SQLite3RowValueExpression) {
+                for (SQLite3Expression element : ((SQLite3RowValueExpression) e).getExpressions()) {
+                    walk(element, depth + 1);
+                }
             }
         }
 
