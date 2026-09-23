@@ -1,0 +1,491 @@
+[
+ {
+  "id": "135787579e",
+  "title": "Unexpected result by WHERE on a GROUP BY view with two IN",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t0(c0 INT, c1 TEXT, PRIMARY KEY(c0));\nCREATE VIEW v74(vout) AS SELECT t0.c1 FROM t0 GROUP BY t0.c1;\nINSERT INTO t0(c0, c1) VALUES (1, -89807229);\nSELECT * FROM v74\nWHERE (vout IN (SELECT t0.c1 FROM t0)) AND NOT (vout IN (SELECT t0.c0 FROM t0));\n",
+  "bug_query": "SELECT * FROM v74 WHERE (vout IN (SELECT t0.c1 FROM t0)) AND NOT (vout IN (SELECT t0.c0 FROM t0));",
+  "expected": "-89807229 (1 row, since the same predicate evaluates to 1)",
+  "actual": "0 rows",
+  "affected": "unknown",
+  "features": [
+   "view",
+   "group-by",
+   "in-subquery"
+  ],
+  "setup": [
+   "CREATE TABLE t0(c0 INT, c1 TEXT, PRIMARY KEY(c0));",
+   "CREATE VIEW v74(vout) AS SELECT t0.c1 FROM t0 GROUP BY t0.c1;",
+   "INSERT INTO t0(c0, c1) VALUES (1, -89807229);",
+   "SELECT * FROM v74\nWHERE (vout IN (SELECT t0.c1 FROM t0)) AND NOT (vout IN (SELECT t0.c0 FROM t0));"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "",
+  "repro_on_3534": true,
+  "verdict": "base-empty"
+ },
+ {
+  "id": "6c97dbe469",
+  "title": "Unexpected result from row-value IN with min()",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t0(c1 INTEGER, UNIQUE(c1));\nINSERT INTO t0(c1) VALUES (5), (-1);\nSELECT c1 FROM t0 WHERE (((c1),(c1)) IN (SELECT c.c1, min(c.c1) FROM t0 AS c));\n",
+  "bug_query": "SELECT c1 FROM t0 WHERE (((c1),(c1)) IN (SELECT c.c1, min(c.c1) FROM t0 AS c));",
+  "expected": "1 row: -1",
+  "actual": "0 rows",
+  "affected": "unknown",
+  "features": [
+   "row-value-in",
+   "in-subquery",
+   "aggregate",
+   "unique-index"
+  ],
+  "setup": [
+   "CREATE TABLE t0(c1 INTEGER, UNIQUE(c1));",
+   "INSERT INTO t0(c1) VALUES (5), (-1);"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "",
+  "repro_on_3534": true,
+  "verdict": "base-empty"
+ },
+ {
+  "id": "765ea1c83b",
+  "title": "Vuln68-49: OR-to-IN Conversion Loses Column Collation in src/whereexpr.c exprAnalyzeOrTerm",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t1(a TEXT COLLATE NOCASE, b TEXT COLLATE NOCASE);\nCREATE TABLE t2(val TEXT);\nCREATE INDEX t2_idx ON t2(val);\nINSERT INTO t1 VALUES('Hello', 'World');\nINSERT INTO t2 VALUES('hello');\nINSERT INTO t2 VALUES('world');\nSELECT t2.val FROM t1, t2 WHERE t1.a = t2.val OR t1.b = t2.val;\n",
+  "bug_query": "SELECT t2.val FROM t1, t2 WHERE t1.a = t2.val OR t1.b = t2.val;",
+  "expected": "hello, world (2 rows), as without the index",
+  "actual": "0 rows once the index enables the OR-to-IN rewrite",
+  "affected": "3.53.4",
+  "features": [
+   "collation",
+   "index",
+   "inner-join",
+   "in-subquery"
+  ],
+  "setup": [
+   "CREATE TABLE t1(a TEXT COLLATE NOCASE, b TEXT COLLATE NOCASE);",
+   "CREATE TABLE t2(val TEXT);",
+   "CREATE INDEX t2_idx ON t2(val);",
+   "INSERT INTO t1 VALUES('Hello', 'World');",
+   "INSERT INTO t2 VALUES('hello');",
+   "INSERT INTO t2 VALUES('world');"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "",
+  "repro_on_3534": true,
+  "verdict": "base-empty"
+ },
+ {
+  "id": "f5d54eb0c5",
+  "title": "Rowid lookup with a REAL key near 2^63 disagrees with = comparison semantics",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t1(x);\nINSERT INTO t1(rowid, x) VALUES(9223372036854775807, 'max-int');\nSELECT x FROM t1 WHERE rowid = 9223372036854775808.0;",
+  "bug_query": "SELECT x FROM t1 WHERE rowid = 9223372036854775808.0;",
+  "expected": "no row, since 9223372036854775807 = 9223372036854775808.0 is false",
+  "actual": "returns max-int; the OP_SeekRowid path disagrees with the table scan",
+  "affected": "unknown",
+  "features": [
+   "rowid"
+  ],
+  "setup": [
+   "CREATE TABLE t1(x);",
+   "INSERT INTO t1(rowid, x) VALUES(9223372036854775807, 'max-int');"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "",
+  "repro_on_3534": false,
+  "verdict": "base-empty"
+ },
+ {
+  "id": "d4dcff8410",
+  "title": "Unexpected results when filtering a RIGHT JOIN over a subquery reading a VIRTUAL generated column",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t1(a INT, c TEXT NOT NULL, b FLOAT AS (a) VIRTUAL);\nINSERT INTO t1(c, a) VALUES ('x', 0);\nSELECT t1.c, t1.c='x' AS p FROM t1 RIGHT JOIN (SELECT iif(1,b,1) AS v FROM t1) s ON v GLOB '0';\nSELECT * FROM t1 RIGHT JOIN (SELECT iif(1,b,1) AS v FROM t1) s ON v GLOB '0' WHERE t1.c='x';",
+  "bug_query": "SELECT * FROM t1 RIGHT JOIN (SELECT iif(1,b,1) AS v FROM t1) s ON v GLOB '0' WHERE t1.c='x';",
+  "expected": "1 row",
+  "actual": "0 rows",
+  "affected": "unknown",
+  "features": [
+   "right-join",
+   "generated-column",
+   "affinity"
+  ],
+  "setup": [
+   "CREATE TABLE t1(a INT, c TEXT NOT NULL, b FLOAT AS (a) VIRTUAL);",
+   "INSERT INTO t1(c, a) VALUES ('x', 0);",
+   "SELECT t1.c, t1.c='x' AS p FROM t1 RIGHT JOIN (SELECT iif(1,b,1) AS v FROM t1) s ON v GLOB '0';"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "x|1\r\n",
+  "repro_on_3534": false,
+  "verdict": "runtime-reject"
+ },
+ {
+  "id": "0ee3d0537b",
+  "title": "unicode(), LIKE and GLOB read U+FFFE and U+FFFF as U+FFFD",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT);\nINSERT INTO t VALUES (1,char(65533)),(2,char(65534)),\n                     (3,char(65535)),(4,char(65532));\nSELECT id, hex(v) FROM t WHERE v LIKE char(65533);\n",
+  "bug_query": "SELECT id, hex(v) FROM t WHERE v LIKE char(65533);",
+  "expected": "only row 1 (hex EFBFBD), matching what = returns",
+  "actual": "rows 1, 2 and 3 - U+FFFE and U+FFFF decode to U+FFFD",
+  "affected": "3.53.4",
+  "features": [
+   "string-function",
+   "like",
+   "rowid"
+  ],
+  "setup": [
+   "CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT);",
+   "INSERT INTO t VALUES (1,char(65533)),(2,char(65534)),\n                     (3,char(65535)),(4,char(65532));"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "1|EFBFBD\r\n2|EFBFBE\r\n3|EFBFBF\r\n",
+  "repro_on_3534": true,
+  "verdict": "no-variants"
+ },
+ {
+  "id": "209d3c6472",
+  "title": "Unexpected results of a row-value IN over a PRIMARY KEY column",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t0(x INT);\nCREATE TABLE t1(a INT PRIMARY KEY, c TEXT);\nINSERT INTO t1 VALUES (100, 'a');\nSELECT count(*) FROM t0 RIGHT JOIN t1 ON 1\n WHERE (t1.c, t1.a) IN (('a', 100));\n",
+  "bug_query": "SELECT count(*) FROM t0 RIGHT JOIN t1 ON 1 WHERE (t1.c, t1.a) IN (('a', 100));",
+  "expected": "1",
+  "actual": "0",
+  "affected": "unknown",
+  "features": [
+   "right-join",
+   "row-value-in",
+   "aggregate",
+   "index"
+  ],
+  "setup": [
+   "CREATE TABLE t0(x INT);",
+   "CREATE TABLE t1(a INT PRIMARY KEY, c TEXT);",
+   "INSERT INTO t1 VALUES (100, 'a');",
+   "SELECT count(*) FROM t0 RIGHT JOIN t1 ON 1\n WHERE (t1.c, t1.a) IN (('a', 100));"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "0\r\n",
+  "repro_on_3534": true,
+  "verdict": "no-variants"
+ },
+ {
+  "id": "51b256b79a",
+  "title": "Unexpected results of row-value IN with a multi-column index after ANALYZE",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t0(c0, c1);\nCREATE UNIQUE INDEX i0 ON t0(c0, c1);\nCREATE INDEX i1 ON t0(c1, c0);\nINSERT INTO t0 VALUES (NULL,'c'),(0,'a'),(0.83,'d'),(9,'e');\nANALYZE;\nINSERT INTO t0 VALUES (0.87,'b');\nCREATE UNIQUE INDEX i2 ON t0(c0);\nSELECT count(*) FROM t0;\nSELECT (c0,c1) IN (SELECT c0,c1 FROM t0) FROM t0;\nSELECT count(*) FROM t0 WHERE (c0,c1) IN (SELECT c0,c1 FROM t0);",
+  "bug_query": "SELECT count(*) FROM t0 WHERE (c0,c1) IN (SELECT c0,c1 FROM t0);",
+  "expected": "4",
+  "actual": "3",
+  "affected": "unknown",
+  "features": [
+   "row-value-in",
+   "in-subquery",
+   "index",
+   "unique-index",
+   "analyze",
+   "aggregate"
+  ],
+  "setup": [
+   "CREATE TABLE t0(c0, c1);",
+   "CREATE UNIQUE INDEX i0 ON t0(c0, c1);",
+   "CREATE INDEX i1 ON t0(c1, c0);",
+   "INSERT INTO t0 VALUES (NULL,'c'),(0,'a'),(0.83,'d'),(9,'e');",
+   "ANALYZE;",
+   "INSERT INTO t0 VALUES (0.87,'b');",
+   "CREATE UNIQUE INDEX i2 ON t0(c0);",
+   "SELECT count(*) FROM t0;",
+   "SELECT (c0,c1) IN (SELECT c0,c1 FROM t0) FROM t0;"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "5\r\n\r\n1\r\n1\r\n1\r\n1\r\n3\r\n",
+  "repro_on_3534": true,
+  "verdict": "no-variants"
+ },
+ {
+  "id": "6c13952293",
+  "title": "json_extract returns different subtype under index",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t1(a INT, j TEXT);\nINSERT INTO t1 VALUES(1, '{\"x\":[1,2]}');\nCREATE INDEX t1_x_idx ON t1(a, json_extract(j,'$.x'));\nSELECT subtype((SELECT json_extract(j,'$.x') FROM t1 WHERE a=1));\nSELECT json_array((SELECT json_extract(j,'$.x') FROM t1 WHERE a=1));\n",
+  "bug_query": "SELECT json_array((SELECT json_extract(j,'$.x') FROM t1 WHERE a=1));",
+  "expected": "subtype 74 and [[1,2]], as with NOT INDEXED",
+  "actual": "subtype 0 and [\"[1,2]\"] when the index is used",
+  "affected": "unknown",
+  "features": [
+   "json",
+   "index",
+   "expression-index",
+   "scalar-subquery"
+  ],
+  "setup": [
+   "CREATE TABLE t1(a INT, j TEXT);",
+   "INSERT INTO t1 VALUES(1, '{\"x\":[1,2]}');",
+   "CREATE INDEX t1_x_idx ON t1(a, json_extract(j,'$.x'));",
+   "SELECT subtype((SELECT json_extract(j,'$.x') FROM t1 WHERE a=1));"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "74\r\n[[1,2]]\r\n",
+  "repro_on_3534": false,
+  "verdict": "no-variants"
+ },
+ {
+  "id": "8ebae091a9",
+  "title": "bug: ordered correlated scalar subquery mixing integer and text values gives wrong result",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t0(k INTEGER);\nINSERT INTO t0 VALUES(1);\nCREATE TABLE t3(c1 TEXT);\nINSERT INTO t3 VALUES('1'),(' 1');\nSELECT (SELECT s.c1 FROM t3 s WHERE a.k = s.c1 ORDER BY s.c1 LIMIT 1) FROM t0 a;",
+  "bug_query": "SELECT (SELECT s.c1 FROM t3 s WHERE a.k = s.c1 ORDER BY s.c1 LIMIT 1) FROM t0 a;",
+  "expected": "' 1' (both rows pass the equality, ' 1' sorts first)",
+  "actual": "'1'",
+  "affected": "3.53.4",
+  "features": [
+   "scalar-subquery",
+   "correlated-subquery",
+   "order-by",
+   "limit",
+   "affinity"
+  ],
+  "setup": [
+   "CREATE TABLE t0(k INTEGER);",
+   "INSERT INTO t0 VALUES(1);",
+   "CREATE TABLE t3(c1 TEXT);",
+   "INSERT INTO t3 VALUES('1'),(' 1');"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "1\r\n",
+  "repro_on_3534": true,
+  "verdict": "no-variants"
+ },
+ {
+  "id": "6870c930b7",
+  "title": "Unexpected result by RIGHT JOIN with a UNIQUE INDEX",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t0(c0 TEXT, c1 TEXT, c2 TEXT);\nINSERT INTO t0(c2) VALUES (0), (-1736265906), (0);\nCREATE VIEW v0(c0) AS SELECT 1 FROM t0 WHERE 0;\nCREATE UNIQUE INDEX i4 ON t0(c2, c0, c1);\nSELECT t0.c2 FROM v0 RIGHT JOIN t0 ON t0.c0\nWHERE t0.c2 IS (SELECT count(*) FROM t0 AS x WHERE x.c0 = v0.c0);\n",
+  "bug_query": "SELECT t0.c2 FROM v0 RIGHT JOIN t0 ON t0.c0 WHERE t0.c2 IS (SELECT count(*) FROM t0 AS x WHERE x.c0 = v0.c0);",
+  "expected": "2 rows: 0 and 0",
+  "actual": "1 row: 0",
+  "affected": "unknown",
+  "features": [
+   "right-join",
+   "view",
+   "unique-index",
+   "index",
+   "correlated-subquery",
+   "scalar-subquery",
+   "aggregate"
+  ],
+  "setup": [
+   "CREATE TABLE t0(c0 TEXT, c1 TEXT, c2 TEXT);",
+   "INSERT INTO t0(c2) VALUES (0), (-1736265906), (0);",
+   "CREATE VIEW v0(c0) AS SELECT 1 FROM t0 WHERE 0;",
+   "CREATE UNIQUE INDEX i4 ON t0(c2, c0, c1);",
+   "SELECT t0.c2 FROM v0 RIGHT JOIN t0 ON t0.c0\nWHERE t0.c2 IS (SELECT count(*) FROM t0 AS x WHERE x.c0 = v0.c0);"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "0\r\n",
+  "repro_on_3534": true,
+  "verdict": "no-variants"
+ },
+ {
+  "id": "f9d7a71210",
+  "title": "Unexpected result by JSON functions",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t1(c1 TEXT);\nINSERT INTO t1 VALUES(0);\nSELECT count(*) FROM t1\nWHERE (c1=json_quote(0)) AND (json_object('c',c1) IS '{\"c\":0}');",
+  "bug_query": "SELECT count(*) FROM t1 WHERE (c1=json_quote(0)) AND (json_object('c',c1) IS '{\"c\":0}');",
+  "expected": "0",
+  "actual": "1",
+  "affected": "unknown",
+  "features": [
+   "json",
+   "aggregate",
+   "affinity"
+  ],
+  "setup": [
+   "CREATE TABLE t1(c1 TEXT);",
+   "INSERT INTO t1 VALUES(0);",
+   "SELECT count(*) FROM t1\nWHERE (c1=json_quote(0)) AND (json_object('c',c1) IS '{\"c\":0}');"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "1\r\n",
+  "repro_on_3534": true,
+  "verdict": "no-variants"
+ },
+ {
+  "id": "1693eb8cfd",
+  "title": "Vuln13: Transitive Constraint Optimization Drops Valid Rows on Mixed Collation Equality",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t1(a TEXT);\nCREATE TABLE t2(b TEXT COLLATE NOCASE);\nINSERT INTO t1 VALUES ('abc');\nINSERT INTO t2 VALUES ('abc');\nSELECT * FROM t1 CROSS JOIN t2 WHERE t1.a = t2.b AND t2.b = 'ABC';\n",
+  "bug_query": "SELECT * FROM t1 CROSS JOIN t2 WHERE t1.a = t2.b AND t2.b = 'ABC';",
+  "expected": "1 row (abc | abc), as with the transitive optimization disabled",
+  "actual": "0 rows",
+  "affected": "unknown",
+  "features": [
+   "collation",
+   "inner-join"
+  ],
+  "setup": [
+   "CREATE TABLE t1(a TEXT);",
+   "CREATE TABLE t2(b TEXT COLLATE NOCASE);",
+   "INSERT INTO t1 VALUES ('abc');",
+   "INSERT INTO t2 VALUES ('abc');"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "abc|abc\r\n",
+  "repro_on_3534": false,
+  "verdict": "variants-no-diff"
+ },
+ {
+  "id": "2c00db58f8",
+  "title": "Vuln27-8: Transitive Optimization Discards Explicit COLLATE During pLeft Substitution, Dropping Valid Rows",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t1(a TEXT);\nCREATE TABLE t2(b TEXT);\nINSERT INTO t1 VALUES ('hello');\nINSERT INTO t1 VALUES ('Hello');\nINSERT INTO t1 VALUES ('HELLO');\nINSERT INTO t1 VALUES ('HeLLo');\nINSERT INTO t2 VALUES ('hello');\nINSERT INTO t2 VALUES ('Hello');\nINSERT INTO t2 VALUES ('HELLO');\nINSERT INTO t2 VALUES ('HeLLo');\nSELECT t1.a, t2.b\n  FROM t1 CROSS JOIN t2\n WHERE t1.a = t2.b\n   AND t2.b COLLATE NOCASE = 'Hello';",
+  "bug_query": "SELECT t1.a, t2.b FROM t1 CROSS JOIN t2 WHERE t1.a = t2.b AND t2.b COLLATE NOCASE = 'Hello';",
+  "expected": "4 rows (all case variants), as with SQLITE_Transitive disabled.",
+  "actual": "1 row (only the exact-case 'Hello'); the derived term loses the explicit COLLATE.",
+  "affected": "unknown",
+  "features": [
+   "inner-join",
+   "collation"
+  ],
+  "setup": [
+   "CREATE TABLE t1(a TEXT);",
+   "CREATE TABLE t2(b TEXT);",
+   "INSERT INTO t1 VALUES ('hello');",
+   "INSERT INTO t1 VALUES ('Hello');",
+   "INSERT INTO t1 VALUES ('HELLO');",
+   "INSERT INTO t1 VALUES ('HeLLo');",
+   "INSERT INTO t2 VALUES ('hello');",
+   "INSERT INTO t2 VALUES ('Hello');",
+   "INSERT INTO t2 VALUES ('HELLO');",
+   "INSERT INTO t2 VALUES ('HeLLo');",
+   "SELECT t1.a, t2.b\n  FROM t1 CROSS JOIN t2\n WHERE t1.a = t2.b\n   AND t2.b COLLATE NOCASE = 'Hello';"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "hello|hello\r\nHello|Hello\r\nHELLO|HELLO\r\nHeLLo|HeLLo\r\n",
+  "repro_on_3534": false,
+  "verdict": "variants-no-diff"
+ },
+ {
+  "id": "6246e57faf",
+  "title": "Unexpected results of JSON functions with a partial index",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t0(c0 TEXT, c1 INT);\nINSERT INTO t0 VALUES ('1', 10);\nCREATE INDEX i0 ON t0(c1) WHERE c0=json_quote(1);\nSELECT c0, (c0=json_quote(1) AND json_array(c0)='[1]') AS p FROM t0;\nSELECT count(*) FROM t0 WHERE (c0=json_quote(1) AND json_array(c0)='[1]');\nSELECT count(*) FROM t0 NOT INDEXED WHERE (c0=json_quote(1) AND json_array(c0)='[1]');",
+  "bug_query": "SELECT count(*) FROM t0 WHERE (c0=json_quote(1) AND json_array(c0)='[1]');",
+  "expected": "0",
+  "actual": "1",
+  "affected": "unknown",
+  "features": [
+   "json",
+   "index",
+   "partial-index",
+   "aggregate"
+  ],
+  "setup": [
+   "CREATE TABLE t0(c0 TEXT, c1 INT);",
+   "INSERT INTO t0 VALUES ('1', 10);",
+   "CREATE INDEX i0 ON t0(c1) WHERE c0=json_quote(1);",
+   "SELECT c0, (c0=json_quote(1) AND json_array(c0)='[1]') AS p FROM t0;",
+   "SELECT count(*) FROM t0 NOT INDEXED WHERE (c0=json_quote(1) AND json_array(c0)='[1]');"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "1|0\r\n1\r\n1\r\n",
+  "repro_on_3534": true,
+  "verdict": "variants-no-diff"
+ },
+ {
+  "id": "6caf587bf1",
+  "title": "Unexpected Results from json_array() with an Indexed json_extract() Expression",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t1(a INT, j TEXT);\nINSERT INTO t1 VALUES(1,'{\"x\":[1,2]}');\nCREATE INDEX ix ON t1(a, json_extract(j,'$.x'));\nSELECT json_array(+json_extract(j,'$.x')) FROM t1 WHERE a=1;\n",
+  "bug_query": "SELECT json_array(+json_extract(j,'$.x')) FROM t1 WHERE a=1;",
+  "expected": "[[1,2]]",
+  "actual": "[\"[1,2]\"] once the index exists",
+  "affected": "unknown",
+  "features": [
+   "json",
+   "index",
+   "expression-index"
+  ],
+  "setup": [
+   "CREATE TABLE t1(a INT, j TEXT);",
+   "INSERT INTO t1 VALUES(1,'{\"x\":[1,2]}');",
+   "CREATE INDEX ix ON t1(a, json_extract(j,'$.x'));"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "[[1,2]]\r\n",
+  "repro_on_3534": false,
+  "verdict": "variants-no-diff"
+ },
+ {
+  "id": "f65fd0e5fd",
+  "title": "bug(constraints): ALTER TABLE ADD COLUMN REAL DEFAULT <large integer> desynchronises table and index",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t(id INTEGER PRIMARY KEY, k INT);\nINSERT INTO t VALUES(1,1),(2,2);\nALTER TABLE t ADD COLUMN c REAL DEFAULT (9223372036854775807);\nINSERT INTO t(id,k) VALUES(3,3);\nCREATE INDEX ti ON t(c);\nSELECT group_concat(id) FROM t WHERE c = 9.2233720368547758e+18;",
+  "bug_query": "SELECT group_concat(id) FROM t WHERE c = 9.2233720368547758e+18;",
+  "expected": "1,2,3",
+  "actual": "3; the indexed lookup misses the rows the table scan finds",
+  "affected": "unknown",
+  "features": [
+   "alter-table",
+   "index",
+   "affinity",
+   "aggregate"
+  ],
+  "setup": [
+   "CREATE TABLE t(id INTEGER PRIMARY KEY, k INT);",
+   "INSERT INTO t VALUES(1,1),(2,2);",
+   "ALTER TABLE t ADD COLUMN c REAL DEFAULT (9223372036854775807);",
+   "INSERT INTO t(id,k) VALUES(3,3);",
+   "CREATE INDEX ti ON t(c);"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "3\r\n",
+  "repro_on_3534": true,
+  "verdict": "variants-no-diff"
+ },
+ {
+  "id": "4f3e1f1cd7",
+  "title": "bug(correctness): nested RIGHT JOIN and WHERE give erroneous extra row in result",
+  "klass": "core-sql-correctness",
+  "repro_sql": "CREATE TABLE t0(a INTEGER PRIMARY KEY);\nINSERT INTO t0 VALUES(5);\nCREATE TABLE t1(b INTEGER);\nINSERT INTO t1 VALUES(1);\nCREATE TABLE t2(c INTEGER);\nINSERT INTO t2 VALUES(7);\nSELECT *\nFROM t1\n    JOIN t0 ON (t0.a >= 3 OR t0.a <= 0)\n    RIGHT JOIN t2 ON 1\nWHERE t1.b IS NULL;",
+  "bug_query": "SELECT *\nFROM t1\n    JOIN t0 ON (t0.a >= 3 OR t0.a <= 0)\n    RIGHT JOIN t2 ON 1\nWHERE t1.b IS NULL;",
+  "expected": "empty result",
+  "actual": "one row: NULL|NULL|7",
+  "affected": "3.53.4",
+  "features": [
+   "right-join",
+   "inner-join",
+   "rowid"
+  ],
+  "setup": [
+   "CREATE TABLE t0(a INTEGER PRIMARY KEY);",
+   "INSERT INTO t0 VALUES(5);",
+   "CREATE TABLE t1(b INTEGER);",
+   "INSERT INTO t1 VALUES(1);",
+   "CREATE TABLE t2(c INTEGER);",
+   "INSERT INTO t2 VALUES(7);"
+  ],
+  "reject": null,
+  "run_err": "",
+  "run_out": "||7\r\n",
+  "repro_on_3534": true,
+  "verdict": "DETECTED"
+ }
+]

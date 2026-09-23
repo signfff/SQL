@@ -34,6 +34,15 @@ coverage/sqlite/*
 !coverage/sqlite/sqlite-official-select-only-variant-ready-corpus.sql
 !coverage/sqlite/auto-research-filtered-corpus.sql
 
+# 官方 bug 基准：收脚本、逐条判定和每个 bug 的小语料，
+# 抓下来的论坛网页(28 MB)与每次实测的运行目录(数百 MB)不入库，用 run_case.py 重跑即可。
+!coverage/sqlite/bugbench/
+coverage/sqlite/bugbench/*
+!coverage/sqlite/bugbench/*.py
+!coverage/sqlite/bugbench/verdicts.json
+!coverage/sqlite/bugbench/corpus/
+!coverage/sqlite/bugbench/corpus/*.sql
+
 # 运行时日志与临时产物
 logs/
 trace.txt

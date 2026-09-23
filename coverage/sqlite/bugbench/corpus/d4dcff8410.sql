@@ -1,0 +1,4 @@
+CREATE TABLE t1(a INT, c TEXT NOT NULL, b FLOAT AS (a) VIRTUAL);
+INSERT INTO t1(c, a) VALUES ('x', 0);
+SELECT t1.c, t1.c='x' AS p FROM t1 RIGHT JOIN (SELECT iif(1,b,1) AS v FROM t1) s ON v GLOB '0';
+SELECT * FROM t1 RIGHT JOIN (SELECT iif(1,b,1) AS v FROM t1) s ON v GLOB '0' WHERE t1.c='x';

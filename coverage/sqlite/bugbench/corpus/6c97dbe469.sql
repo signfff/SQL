@@ -1,0 +1,3 @@
+CREATE TABLE t0(c1 INTEGER, UNIQUE(c1));
+INSERT INTO t0(c1) VALUES (5), (-1);
+SELECT c1 FROM t0 WHERE (((c1),(c1)) IN (SELECT c.c1, min(c.c1) FROM t0 AS c));

@@ -1,0 +1,6 @@
+CREATE TABLE t0(x INT);
+CREATE TABLE t1(a INT PRIMARY KEY, c TEXT);
+INSERT INTO t1 VALUES (100, 'a');
+SELECT count(*) FROM t0 RIGHT JOIN t1 ON 1
+ WHERE (t1.c, t1.a) IN (('a', 100));
+SELECT count(*) FROM t0 RIGHT JOIN t1 ON 1 WHERE (t1.c, t1.a) IN (('a', 100));

@@ -553,6 +553,17 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
      */
     private static final boolean CORPUS_SETUP_ONLY = Boolean.getBoolean("sqlite3.egraph.corpusSetupOnly");
 
+    /**
+     * Keep a corpus case whose base query returns no rows instead of dropping it. "Returns nothing where it should
+     * return something" is the shape of a large share of the reported correctness bugs, and the oracle reports an
+     * empty original against a non-empty variant just as it reports the reverse. Measured on the reproducers of the
+     * SQLite bug forum: one more of them is caught, at no throughput cost the measurement could separate from noise.
+     * The random path keeps its own sampling knob (egraph.emptyBaseCheckPercent), since an empty base query there
+     * means a predicate that matches nothing, whose variants are empty too.
+     */
+    private static final boolean ALLOW_EMPTY_BASE_QUERY = !"false"
+            .equalsIgnoreCase(System.getProperty("sqlite3.egraph.corpus.allowEmptyBase", "true"));
+
     private static final boolean RTREE_TARGETS = !"false"
             .equalsIgnoreCase(System.getProperty("egraph.rtreeTargets", "true"));
 
@@ -1316,9 +1327,17 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         EGraphSqlCoverage.trace("corpus-base-nonempty-probe start source=" + getCorpusSourceName(selectedInput)
                 + " query=" + shortenForTrace(rewriteQuery));
         if (!queryProducesRows(state, rewriteQuery)) {
+            // A base query returning nothing was dropped here because its variants are then
+            // usually empty too, and an empty pair can never disagree. But a query that returns
+            // no rows where it should return some is exactly what a large share of the reported
+            // correctness bugs look like, and an empty original against a non-empty variant is
+            // what hasSingleSideEmptyMismatch reports. Keeping the case costs one wasted check
+            // when the variants really are all empty.
             EGraphSqlCoverage.trace("corpus-base-nonempty-probe empty source=" + getCorpusSourceName(selectedInput)
-                    + " query=" + shortenForTrace(rewriteQuery));
-            throw new IgnoreMeException();
+                    + " query=" + shortenForTrace(rewriteQuery) + " kept=" + ALLOW_EMPTY_BASE_QUERY);
+            if (!ALLOW_EMPTY_BASE_QUERY) {
+                throw new IgnoreMeException();
+            }
         }
         EGraphSqlCoverage.trace("corpus-base-nonempty-probe done source=" + getCorpusSourceName(selectedInput));
         EGraphCoverageContext originalContext = createEGraphCoverageContext(state, targetTables,
