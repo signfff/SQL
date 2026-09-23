@@ -6,7 +6,10 @@ import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import com.google.auto.service.AutoService;
@@ -384,20 +387,52 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
     }
 
     public static void ensureEGraphRandomDatabase(SQLite3GlobalState globalState) throws Exception {
+        Set<String> existingNames = new HashSet<>();
+        int ordinaryTables = 0;
         try {
             globalState.updateSchema();
-            boolean hasRegularTable = globalState.getSchema().getDatabaseTables().stream()
-                    .anyMatch(t -> !t.isView() && !t.isVirtual() && !t.getColumns().isEmpty());
-            if (hasRegularTable) {
-                return;
+            for (SQLite3Table table : globalState.getSchema().getDatabaseTables()) {
+                existingNames.add(table.getName().toLowerCase(Locale.ROOT));
+                if (!table.isView() && !table.isVirtual() && !table.getColumns().isEmpty()) {
+                    ordinaryTables++;
+                }
             }
         } catch (AssertionError ignored) {
         }
+        // A corpus case brings its own t0, and this used to return the moment any ordinary table
+        // existed. That is why a join never appeared in a corpus-driven run: the join path needs a
+        // second ordinary table, and nothing ever created one. The missing tables are topped up
+        // instead. With egraph.tables at its default of 1, one ordinary table is still enough and
+        // this returns exactly where it used to.
+        boolean wantRtree = EGRAPH_RTREE_TARGETS && globalState.getDbmsSpecificOptions().testRtree
+                && existingNames.stream().noneMatch(name -> name.startsWith("rt"));
+        if (ordinaryTables >= EGRAPH_TABLES && !wantRtree) {
+            return;
+        }
 
-        SQLQueryAdapter tableQuery = SQLite3TableGenerator.createTableStatement(DBMSCommon.createTableName(0),
-                globalState);
-        globalState.executeStatement(tableQuery);
+        String rtreeTableName = null;
+        int nextName = 0;
+        for (int created = ordinaryTables; created < EGRAPH_TABLES; created++) {
+            String name;
+            do {
+                name = DBMSCommon.createTableName(nextName++);
+            } while (existingNames.contains(name.toLowerCase(Locale.ROOT)));
+            existingNames.add(name.toLowerCase(Locale.ROOT));
+            globalState.executeStatement(SQLite3TableGenerator.createTableStatement(name, globalState));
+        }
+        if (wantRtree) {
+            int rtreeIndex = 1;
+            while (existingNames.contains(("rt" + rtreeIndex).toLowerCase(Locale.ROOT))) {
+                rtreeIndex++;
+            }
+            rtreeTableName = "rt" + rtreeIndex;
+            globalState.executeStatement(
+                    SQLite3CreateVirtualRtreeTabelGenerator.createTableStatement(rtreeTableName, globalState));
+        }
         globalState.updateSchema();
+        if (rtreeTableName != null) {
+            seedRtreeTable(globalState, rtreeTableName);
+        }
         checkTablesForGeneratedColumnLoops(globalState);
 
         StatementExecutor<SQLite3GlobalState, Action> se = new StatementExecutor<>(globalState, EGRAPH_ACTIONS,
