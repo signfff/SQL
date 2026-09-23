@@ -233,6 +233,19 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                                 i + 1, variantResult.size(), varExecTime);
                     }
                 } catch (AssertionError e) {
+                    // A defect that is live in the shipped engine answers every check that reaches
+                    // it, hundreds of times in a single run, and buries whatever else the run finds.
+                    // Recognised ones are counted and logged rather than reported as a finding.
+                    String knownBug = sqlancer.sqlite3.oracle.EGraphKnownBugs.recognise(rewriteQuery);
+                    if (knownBug != null) {
+                        sqlancer.sqlite3.oracle.EGraphKnownBugs.record(knownBug, rewriteQuery, originalQuery,
+                                variantQuery, originalResult.size(), variantResult.size());
+                        if (show) {
+                            System.err.printf("  [V%d] %3d rows  %3d ms  KNOWN BUG (%s)%n",
+                                    i + 1, variantResult.size(), varExecTime, knownBug);
+                        }
+                        continue;
+                    }
                     if (show) {
                         System.err.printf("  [V%d] %3d rows  %3d ms  MISMATCH%n",
                                 i + 1, variantResult.size(), varExecTime);

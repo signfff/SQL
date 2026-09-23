@@ -10,6 +10,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.EnumMap;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
@@ -805,6 +806,14 @@ public class EGraphSqlCoverage {
                         w.printf("  %-28s original-result-checks=%d%n", "", originalChecksForSource);
                     }
                 }
+                w.println();
+            }
+
+            List<String> knownBugLines = EGraphKnownBugs.report();
+            if (!knownBugLines.isEmpty()) {
+                w.println("  Mismatches attributed to an already reported bug (not findings)");
+                knownBugLines.forEach(w::println);
+                w.println("  Turn the recognition off with -Degraph.knownBugs=false to see them as findings again.");
                 w.println();
             }
 
