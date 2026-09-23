@@ -2234,6 +2234,55 @@ fn random_sql_literal(rng: &mut impl rand::Rng) -> String {
 
 //  Main entry point
 
+/// Functions whose value can change between two evaluations of the same expression. A predicate
+/// containing one of these may not be written down twice, so only the single-evaluation identity
+/// is offered for it.
+const NONDETERMINISTIC_MARKERS: [&str; 9] = [
+    "random(",
+    "randomblob(",
+    "changes(",
+    "total_changes(",
+    "last_insert_rowid(",
+    "current_timestamp",
+    "current_date",
+    "current_time",
+    "'now'",
+];
+
+/// Rewrites that hold for any predicate whatever it contains, used when the e-graph cannot take
+/// the predicate apart. They leave the truth value alone under three-valued logic - NULL stays
+/// NULL through a double negation and through `p AND p` / `p OR p` - but they change the shape
+/// the query planner sees, which is what decides whether an index is used.
+fn identity_variants(where_expr: &SqlExpr, source_sql: &str, max_variants: usize) -> Vec<SqlExpr> {
+    if max_variants == 0 {
+        return Vec::new();
+    }
+    let predicate = fix_hex_format(where_expr.clone(), source_sql);
+    let nested = |e: &SqlExpr| SqlExpr::Nested(Box::new(e.clone()));
+    let not = |e: SqlExpr| SqlExpr::UnaryOp {
+        op: UnaryOperator::Not,
+        expr: Box::new(e),
+    };
+    let mut variants = vec![not(nested(&not(nested(&predicate))))];
+
+    let rendered = format!("{}", predicate).to_lowercase();
+    let repeatable = !NONDETERMINISTIC_MARKERS
+        .iter()
+        .any(|marker| rendered.contains(marker));
+    if repeatable {
+        for op in [BinaryOperator::And, BinaryOperator::Or] {
+            variants.push(SqlExpr::BinaryOp {
+                left: Box::new(nested(&predicate)),
+                op,
+                right: Box::new(nested(&predicate)),
+            });
+        }
+    }
+
+    variants.truncate(max_variants);
+    variants
+}
+
 pub fn generate_equivalent_where_clauses(
     where_expr: &SqlExpr,
     source_sql: &str,
@@ -2244,7 +2293,11 @@ pub fn generate_equivalent_where_clauses(
 
     let root = Id::from(recexpr.as_ref().len() - 1);
     if matches!(recexpr[root], SqlLang::Symbol(_)) {
-        return Ok(Vec::new());
+        // The whole WHERE is one atom this language has no node for - a row-value IN, an
+        // IN over a subquery, a LIKE. No rule can match it, so the e-graph used to hand
+        // back nothing and the check compared a query against itself. The identities below
+        // do not need to look inside the atom: they hold for any predicate, in any context.
+        return Ok(identity_variants(where_expr, source_sql, max_variants));
     }
 
     let (egraph, root) = perform_rewrites(&recexpr, iter_limit);
@@ -2332,6 +2385,45 @@ pub fn generate_equivalent_where_clauses(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_predicate(sql: &str) -> SqlExpr {
+        use sqlparser::ast::{SetExpr, Statement};
+        use sqlparser::dialect::GenericDialect;
+        use sqlparser::parser::Parser;
+        let statements = Parser::parse_sql(&GenericDialect {}, sql).expect("parses");
+        match &statements[0] {
+            Statement::Query(query) => match query.body.as_ref() {
+                SetExpr::Select(select) => select.selection.clone().expect("has a WHERE"),
+                _ => panic!("not a plain SELECT"),
+            },
+            _ => panic!("not a query"),
+        }
+    }
+
+    #[test]
+    fn identity_variants_cover_an_atom_the_language_cannot_take_apart() {
+        let sql = "SELECT * FROM t0 WHERE c0 IN (SELECT c1 FROM t1)";
+        let variants = identity_variants(&parse_predicate(sql), sql, 8);
+        let rendered: Vec<String> = variants.iter().map(|v| format!("{}", v)).collect();
+        assert_eq!(rendered.len(), 3, "{:?}", rendered);
+        assert!(rendered[0].starts_with("NOT (NOT ("), "{:?}", rendered);
+        assert!(rendered[1].contains(" AND "), "{:?}", rendered);
+        assert!(rendered[2].contains(" OR "), "{:?}", rendered);
+    }
+
+    #[test]
+    fn identity_variants_do_not_repeat_a_nondeterministic_predicate() {
+        let sql = "SELECT * FROM t0 WHERE c0 IN (SELECT c1 FROM t1 WHERE random() > 0)";
+        let variants = identity_variants(&parse_predicate(sql), sql, 8);
+        assert_eq!(variants.len(), 1, "only the single-evaluation identity is safe");
+    }
+
+    #[test]
+    fn identity_variants_respect_the_requested_maximum() {
+        let sql = "SELECT * FROM t0 WHERE c0 IN (SELECT c1 FROM t1)";
+        assert_eq!(identity_variants(&parse_predicate(sql), sql, 2).len(), 2);
+        assert!(identity_variants(&parse_predicate(sql), sql, 0).is_empty());
+    }
 
     #[test]
     fn three_valued_and_false_wins_over_null() {

@@ -1326,16 +1326,22 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         }
         EGraphSqlCoverage.trace("corpus-base-nonempty-probe start source=" + getCorpusSourceName(selectedInput)
                 + " query=" + shortenForTrace(rewriteQuery));
-        if (!queryProducesRows(state, rewriteQuery)) {
+        ProbeOutcome baseOutcome = probeQuery(state, rewriteQuery);
+        if (baseOutcome != ProbeOutcome.ROWS) {
             // A base query returning nothing was dropped here because its variants are then
             // usually empty too, and an empty pair can never disagree. But a query that returns
             // no rows where it should return some is exactly what a large share of the reported
             // correctness bugs look like, and an empty original against a non-empty variant is
             // what hasSingleSideEmptyMismatch reports. Keeping the case costs one wasted check
             // when the variants really are all empty.
-            EGraphSqlCoverage.trace("corpus-base-nonempty-probe empty source=" + getCorpusSourceName(selectedInput)
-                    + " query=" + shortenForTrace(rewriteQuery) + " kept=" + ALLOW_EMPTY_BASE_QUERY);
-            if (!ALLOW_EMPTY_BASE_QUERY) {
+            // Only a query that ran and matched nothing is worth keeping. One that failed to run
+            // carries no judgment, and running it again through the oracle turns the failure into
+            // an unexpected-error assertion.
+            boolean keep = ALLOW_EMPTY_BASE_QUERY && baseOutcome == ProbeOutcome.EMPTY;
+            EGraphSqlCoverage.trace("corpus-base-nonempty-probe " + baseOutcome.name().toLowerCase(Locale.ROOT)
+                    + " source=" + getCorpusSourceName(selectedInput) + " query=" + shortenForTrace(rewriteQuery)
+                    + " kept=" + keep);
+            if (!keep) {
                 throw new IgnoreMeException();
             }
         }

@@ -48,7 +48,7 @@
   "run_err": "",
   "run_out": "",
   "repro_on_3534": true,
-  "verdict": "base-empty"
+  "verdict": "DETECTED"
  },
  {
   "id": "765ea1c83b",
@@ -77,7 +77,7 @@
   "run_err": "",
   "run_out": "",
   "repro_on_3534": true,
-  "verdict": "base-empty"
+  "verdict": "DETECTED"
  },
  {
   "id": "f5d54eb0c5",
