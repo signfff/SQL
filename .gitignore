@@ -40,6 +40,7 @@ coverage/sqlite/*
 coverage/sqlite/bugbench/*
 !coverage/sqlite/bugbench/*.py
 !coverage/sqlite/bugbench/verdicts.json
+!coverage/sqlite/bugbench/referee.json
 !coverage/sqlite/bugbench/corpus/
 !coverage/sqlite/bugbench/corpus/*.sql
 

@@ -1,0 +1,113 @@
+{
+ "trunkCheckin": "75c1ee9de670c6366200df65b3a2c7c8888f709e985b5eaf81d57e562ab65b93",
+ "cases": [
+  {
+   "id": "0ee3d0537b",
+   "live_in_release": true,
+   "release": "1|EFBFBD\n2|EFBFBE\n3|EFBFBF",
+   "trunk": "1|EFBFBD"
+  },
+  {
+   "id": "135787579e",
+   "live_in_release": true,
+   "release": "",
+   "trunk": "-89807229\n-89807229"
+  },
+  {
+   "id": "1693eb8cfd",
+   "live_in_release": false,
+   "release": "abc|abc",
+   "trunk": "abc|abc"
+  },
+  {
+   "id": "209d3c6472",
+   "live_in_release": true,
+   "release": "0\n0",
+   "trunk": "1\n1"
+  },
+  {
+   "id": "2c00db58f8",
+   "live_in_release": false,
+   "release": "hello|hello\nHello|Hello\nHELLO|HELLO\nHeLLo|HeLLo\nhello|hello\nHello|Hello\nHELLO|HELLO\nHeLLo|HeLLo",
+   "trunk": "hello|hello\nHello|Hello\nHELLO|HELLO\nHeLLo|HeLLo\nhello|hello\nHello|Hello\nHELLO|HELLO\nHeLLo|HeLLo"
+  },
+  {
+   "id": "4f3e1f1cd7",
+   "live_in_release": true,
+   "release": "||7",
+   "trunk": ""
+  },
+  {
+   "id": "51b256b79a",
+   "live_in_release": true,
+   "release": "5\n\n1\n1\n1\n1\n3",
+   "trunk": "5\n\n1\n1\n1\n1\n4"
+  },
+  {
+   "id": "6246e57faf",
+   "live_in_release": true,
+   "release": "1|0\n1\n1",
+   "trunk": "1|0\n0\n0"
+  },
+  {
+   "id": "6870c930b7",
+   "live_in_release": true,
+   "release": "0\n0",
+   "trunk": "0\n0\n0\n0"
+  },
+  {
+   "id": "6c13952293",
+   "live_in_release": false,
+   "release": "74\n[[1,2]]",
+   "trunk": "74\n[[1,2]]"
+  },
+  {
+   "id": "6c97dbe469",
+   "live_in_release": true,
+   "release": "",
+   "trunk": "-1"
+  },
+  {
+   "id": "6caf587bf1",
+   "live_in_release": false,
+   "release": "[[1,2]]",
+   "trunk": "[[1,2]]"
+  },
+  {
+   "id": "765ea1c83b",
+   "live_in_release": true,
+   "release": "",
+   "trunk": "hello\nworld"
+  },
+  {
+   "id": "8ebae091a9",
+   "live_in_release": false,
+   "release": "1",
+   "trunk": "1"
+  },
+  {
+   "id": "d4dcff8410",
+   "live_in_release": true,
+   "release": "x|1",
+   "trunk": "|"
+  },
+  {
+   "id": "f5d54eb0c5",
+   "live_in_release": false,
+   "release": "",
+   "trunk": ""
+  },
+  {
+   "id": "f65fd0e5fd",
+   "live_in_release": true,
+   "release": "3",
+   "trunk": "1,2,3"
+  },
+  {
+   "id": "f9d7a71210",
+   "live_in_release": true,
+   "release": "1\n1",
+   "trunk": "0\n0"
+  }
+ ]
+}
