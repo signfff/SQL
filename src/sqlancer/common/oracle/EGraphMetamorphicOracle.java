@@ -233,6 +233,25 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                                 i + 1, variantResult.size(), varExecTime);
                     }
                 } catch (AssertionError e) {
+                    // Ask the trunk build first when one is configured. It answers from behaviour -
+                    // do these two queries agree on an engine carrying every fix since the release -
+                    // where the signatures below only recognise the shape of a report someone
+                    // already wrote down.
+                    if (sqlancer.sqlite3.oracle.EGraphTrunkReferee.isConfigured()) {
+                        sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict verdict = sqlancer.sqlite3.oracle.EGraphTrunkReferee
+                                .judge(currentDatabaseFile(state), originalQuery, variantQuery);
+                        if (verdict == sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict.FIXED_UPSTREAM
+                                || verdict == sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict.UNSTABLE_QUERY) {
+                            String reason = verdict.name().toLowerCase(java.util.Locale.ROOT);
+                            sqlancer.sqlite3.oracle.EGraphKnownBugs.record(reason, rewriteQuery, originalQuery,
+                                    variantQuery, originalResult.size(), variantResult.size());
+                            if (show) {
+                                System.err.printf("  [V%d] %3d rows  %3d ms  %s%n",
+                                        i + 1, variantResult.size(), varExecTime, reason);
+                            }
+                            continue;
+                        }
+                    }
                     // A defect that is live in the shipped engine answers every check that reaches
                     // it, hundreds of times in a single run, and buries whatever else the run finds.
                     // Recognised ones are counted and logged rather than reported as a finding.
@@ -464,6 +483,18 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                     StandardOpenOption.CREATE, StandardOpenOption.APPEND);
         } catch (IOException ignored) {
         }
+    }
+
+    /**
+     * The file SQLite3Provider.createDatabase opened for this run, so the referee can ask its questions of the same
+     * data. Null when the state does not name a database, which leaves the referee with no verdict.
+     */
+    private static java.io.File currentDatabaseFile(SQLGlobalState<?, ?> state) {
+        if (state == null || state.getDatabaseName() == null) {
+            return null;
+        }
+        return new java.io.File("." + java.io.File.separator + "databases",
+                state.getDatabaseName() + ".db");
     }
 
     private static void appendSql(StringBuilder sb, String sql) {

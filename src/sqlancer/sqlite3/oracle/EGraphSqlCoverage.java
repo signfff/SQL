@@ -817,6 +817,13 @@ public class EGraphSqlCoverage {
                 w.println();
             }
 
+            List<String> refereeLines = EGraphTrunkReferee.report();
+            if (!refereeLines.isEmpty()) {
+                w.println("  Mismatches put to the trunk build (-Degraph.referee.command)");
+                refereeLines.forEach(w::println);
+                w.println();
+            }
+
             if (!corpusFilterSnapshot.isEmpty()) {
                 w.println("  Corpus input filter skips");
                 for (Map.Entry<String, AtomicInteger> entry : corpusFilterSnapshot.entrySet()) {
