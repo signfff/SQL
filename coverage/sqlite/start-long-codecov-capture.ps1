@@ -5,6 +5,10 @@
     [string[]] $ExtraJavaProps = @(),
     # Suffix for the run directory so A/B runs are told apart at a glance
     [string] $RunTag = "",
+    # The trunk build that judges a mismatch. Built from the canonical tree under WSL; record the
+    # check-in it came from, since trunk moves daily and a verdict against "latest" cannot be
+    # rechecked. Empty turns the refereeing off and makes every mismatch a finding again.
+    [string] $RefereeCommand = "wsl.exe -e /home/zwq/sqlite-trunk/src/sqlite3",
     # Wall-clock limit for the capture. -1 keeps the original behaviour of running
     # until Ctrl+C; a positive value makes the run unattended.
     [int] $TimeoutSeconds = -1
@@ -185,6 +189,12 @@ $javaArgs += @(
     "-Dsqlite3.egraph.corpus.selectOnlyTemplates=true",
     "-Dsqlite3.egraph.baseSkeletons=true",
     "-Dsqlite3.egraph.autoResearchGuidedShapes=true",
+    # Every mismatch goes to a build of SQLite's trunk before it is reported: one the trunk build
+    # answers the same way on both queries is a defect upstream has already fixed, and the run is
+    # left with what is new. The value is quoted because java's @argfile splits a line on spaces.
+    ("-Degraph.referee.command=""" + $RefereeCommand + """"),
+    "-Degraph.referee.log=$runDir\referee.sql",
+    "-Degraph.knownBugs.log=$runDir\known-bugs.sql",
     "-Dsqlite3.egraph.autoResearchResults=$autoResearchResults",
     "-cp", $javaClasspath,
     "sqlancer.Main",
