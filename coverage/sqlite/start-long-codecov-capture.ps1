@@ -1,14 +1,21 @@
-﻿param(
+param(
     [switch] $IncludeAutoResearchCorpus,
     [switch] $NoAutoResearchCorpus,
     # Extra -D properties, e.g. -ExtraJavaProps '-Dsqlite3.egraph.corpusSetupOnly=true'
     [string[]] $ExtraJavaProps = @(),
     # Suffix for the run directory so A/B runs are told apart at a glance
     [string] $RunTag = "",
-    # The trunk build that judges a mismatch. Built from the canonical tree under WSL; record the
-    # check-in it came from, since trunk moves daily and a verdict against "latest" cannot be
-    # rechecked. Empty turns the refereeing off and makes every mismatch a finding again.
-    [string] $RefereeCommand = "wsl.exe -e /home/zwq/sqlite-trunk/src/sqlite3",
+    # Ceiling for the JVM heap. Empty leaves the JVM its default, a quarter of the machine.
+    [string] $JavaHeapMax = "3g",
+    # How many corpus cases are kept in memory. Every kept case holds its setup statements, so this
+    # is the corpus reader's share of the heap.
+    [int] $MaxCorpusQueries = 30000,
+    # The trunk build that judges a mismatch, check-in 75c1ee9de6 (3.54.0, 2026-09-24). Record which
+    # check-in it came from: trunk moves daily and a verdict against "latest" cannot be rechecked.
+    # It is a native build on purpose - reaching the same binary through WSL kept a second virtual
+    # machine resident for the whole run, and WSL2 does not hand that memory back. Empty turns the
+    # refereeing off and makes every mismatch a finding again.
+    [string] $RefereeCommand = "D:\sqlancer\coverage\sqlite\trunk\sqlite3_trunk.exe",
     # Wall-clock limit for the capture. -1 keeps the original behaviour of running
     # until Ctrl+C; a positive value makes the run unattended.
     [int] $TimeoutSeconds = -1
@@ -152,6 +159,13 @@ Write-Host "powershell -ExecutionPolicy Bypass -File .\coverage\sqlite\finish-lo
 
 $javaExe = (Get-Command java.exe -ErrorAction Stop).Source
 $javaArgs = @()
+# Without a ceiling the JVM takes a quarter of the machine and never gives it back, and the corpus
+# reader holds every case it keeps. On a 16 GB machine that plus the file cache of a multi-GB corpus
+# plus WSL, which the referee needs, is enough to put the system under memory pressure and have the
+# run killed. A capture run is not heap-hungry - it streams the corpus and keeps maxQueries cases.
+if (-not [string]::IsNullOrWhiteSpace($JavaHeapMax)) {
+    $javaArgs += "-Xmx$JavaHeapMax"
+}
 # Split on commas as well as across array elements. powershell.exe -File does not turn
 # `-ExtraJavaProps 'a','b'` into an array - it hands over the single string "a,b" - and a -D property
 # glued to the next one is not rejected by the JVM, it silently becomes part of the first property's
@@ -171,7 +185,7 @@ $javaArgs += @(
     "-Degraph.contextReplay.file=$runDir\replay-context.sql",
     "-Degraph.trace.file=$runDir\egraph-trace.log",
     "-Degraph.singleSideEmptyLog=$runDir\single-side-empty-reproducers.sql",
-    "-Dsqlite3.egraph.input.maxQueries=60000",
+    "-Dsqlite3.egraph.input.maxQueries=$MaxCorpusQueries",
     "-Dsqlite3.egraph.input.maxCaseSetupStatements=80",
     "-Dsqlite3.egraph.corpus.maxAttemptsPerCheck=4",
     "-Dsqlite3.egraph.corpus.maxCases=200000",

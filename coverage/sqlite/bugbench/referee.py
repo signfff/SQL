@@ -17,13 +17,18 @@ RELEASE = r"D:\sqlancer\coverage\sqlite\build\sqlite3_cov.exe"
 # Built from the GitHub mirror of the canonical tree, which carries the same manifest as the Fossil
 # check-in. Pinned here because trunk moves: a verdict is only reproducible against a fixed build.
 TRUNK_CHECKIN = "75c1ee9de670c6366200df65b3a2c7c8888f709e985b5eaf81d57e562ab65b93"
-TRUNK_WSL = "cd ~/sqlite-trunk/src && ./sqlite3 :memory:"
+TRUNK = os.path.join(r"D:\sqlancer\coverage\sqlite", "trunk", "sqlite3_trunk.exe")
 
 
 def normalise(output):
-    # The release binary is a Windows build and ends its lines with CRLF; the trunk build runs
-    # under WSL and ends them with LF. Comparing raw output made every case look different.
-    return "\n".join(line.rstrip() for line in output.replace("\r\n", "\n").strip().splitlines())
+    # Line endings differed between the two builds when the trunk one still ran under WSL, and
+    # comparing raw output made every case look different. Only trailing whitespace is dropped:
+    # one of these reports is precisely about a value losing its leading space, and stripping the
+    # output as a whole hid it.
+    lines = output.replace("\r\n", "\n").split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(line.rstrip() for line in lines)
 
 
 def run_release(path):
@@ -36,9 +41,8 @@ def run_release(path):
 
 def run_trunk(path):
     with open(path, "rb") as handle:
-        proc = subprocess.run(["wsl.exe", "-e", "bash", "-lc", TRUNK_WSL], stdin=handle,
-                              capture_output=True, timeout=60)
-    return normalise(proc.stdout.decode("utf-8", "replace").replace("\x00", ""))
+        proc = subprocess.run([TRUNK, ":memory:"], stdin=handle, capture_output=True, timeout=60)
+    return normalise(proc.stdout.decode("utf-8", "replace"))
 
 
 def main():
