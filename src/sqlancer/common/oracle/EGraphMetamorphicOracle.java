@@ -71,6 +71,14 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
             System.getProperty("egraph.variantOnlyEmptyLog", "egraph-single-side-empty-reproducers.sql")));
     private static int checkCounter;
 
+    /**
+     * How many checks in a row found the rewrite server unavailable, and when to stop waiting for it. A capture with no
+     * server tests nothing, so the run is better ended than left reporting progress it is not making.
+     */
+    private static final java.util.concurrent.atomic.AtomicLong VARIANTS_UNAVAILABLE_IN_A_ROW = new java.util.concurrent.atomic.AtomicLong();
+    private static final long VARIANTS_UNAVAILABLE_LIMIT = Long.getLong("egraph.variantServerFailAfter", 500);
+    private static final long VARIANTS_UNAVAILABLE_WARN_EVERY = 50;
+
     private final G state;
     private final QueryGenerator<G> queryGenerator;
     private final ExpectedErrors errors;
@@ -160,8 +168,27 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                 sqlancer.sqlite3.oracle.EGraphSqlCoverage.trace("check#" + checkNum + " egraph-request start source="
                         + querySource + " rewrite=" + formatQuery(rewriteQuery));
                 variants = variantGenerator.generateVariants(rewriteQuery);
+                VARIANTS_UNAVAILABLE_IN_A_ROW.set(0);
             } catch (Exception e) {
                 if (isVariantGenerationUnavailable(e)) {
+                    // Without the rewrite server a check has nothing to compare against, and this
+                    // path used to skip quietly. A 24 hour capture lost 21 of its hours that way:
+                    // the server was killed, every check after it was skipped, and the run kept
+                    // reporting progress. Past a run of failures there is nothing to wait for.
+                    long inARow = VARIANTS_UNAVAILABLE_IN_A_ROW.incrementAndGet();
+                    if (inARow == 1 || inARow % VARIANTS_UNAVAILABLE_WARN_EVERY == 0) {
+                        System.err.printf(
+                                "[EGRAPH] the rewrite server has refused %d checks in a row (%s). "
+                                        + "Nothing is being tested while it is down.%n",
+                                inARow, e);
+                    }
+                    if (VARIANTS_UNAVAILABLE_LIMIT > 0 && inARow >= VARIANTS_UNAVAILABLE_LIMIT) {
+                        System.err.printf(
+                                "[EGRAPH] giving up after %d checks without the rewrite server. "
+                                        + "Raise -Degraph.variantServerFailAfter to wait longer, or 0 to wait forever.%n",
+                                inARow);
+                        System.exit(3);
+                    }
                     skipped = true;
                     throw new IgnoreMeException();
                 }
