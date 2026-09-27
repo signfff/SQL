@@ -206,7 +206,11 @@ $javaArgs += @(
     # Every mismatch goes to a build of SQLite's trunk before it is reported: one the trunk build
     # answers the same way on both queries is a defect upstream has already fixed, and the run is
     # left with what is new. The value is quoted because java's @argfile splits a line on spaces.
-    ("-Degraph.referee.command=""" + $RefereeCommand + """"),
+    # Doubled backslashes, then quoted. java's @argfile treats a backslash inside quotes as an
+    # escape, so "D:\sqlancer\coverage\sqlite\trunk\sqlite3_trunk.exe" reached the JVM as
+    # "D:sqlancercoveragesqlite" and the referee could not start a single time - which is what every
+    # "referee could not answer" in the captures before this was.
+    ("-Degraph.referee.command=""" + $RefereeCommand.Replace("\", "\\") + """"),
     "-Degraph.referee.log=$runDir\referee.sql",
     "-Degraph.knownBugs.log=$runDir\known-bugs.sql",
     "-Dsqlite3.egraph.autoResearchResults=$autoResearchResults",

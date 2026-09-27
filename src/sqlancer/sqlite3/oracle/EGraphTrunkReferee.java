@@ -68,7 +68,11 @@ public final class EGraphTrunkReferee {
      *                     disturbed and the referee cannot write to it
      */
     public static Verdict judge(File databaseFile, String originalQuery, String variantQuery) {
-        if (!isConfigured() || databaseFile == null || !databaseFile.isFile()) {
+        if (!isConfigured()) {
+            return Verdict.UNKNOWN;
+        }
+        if (databaseFile == null || !databaseFile.isFile()) {
+            unanswered("no-database-file", String.valueOf(databaseFile), originalQuery);
             return Verdict.UNKNOWN;
         }
         Path copy = null;
@@ -79,6 +83,8 @@ public final class EGraphTrunkReferee {
             String variant = run(copy, variantQuery);
             if (original == null || variant == null) {
                 FAILED.incrementAndGet();
+                unanswered(original == null ? "original-did-not-run" : "variant-did-not-run",
+                        lastFailure, original == null ? originalQuery : variantQuery);
                 return Verdict.UNKNOWN;
             }
             // Compare the rows as a multiset, never in order. SQL fixes the order of a result only
@@ -103,6 +109,7 @@ public final class EGraphTrunkReferee {
             return Verdict.LIVE_UPSTREAM;
         } catch (IOException | InterruptedException e) {
             FAILED.incrementAndGet();
+            unanswered("exception", String.valueOf(e), originalQuery);
             return Verdict.UNKNOWN;
         } finally {
             if (copy != null) {
@@ -193,8 +200,10 @@ public final class EGraphTrunkReferee {
             // databases attached from memory, which the copied file does not carry. Replaying the
             // context first is what lets this answer for those checks at all. Failures are left
             // alone: a statement that no longer applies to this database is not the question.
+            int statementCount = 0;
             for (String statement : EGraphContextSnapshot.current()) {
                 sql.append(stripTrailingSemicolon(statement)).append(';').append(System.lineSeparator());
+                statementCount++;
             }
             sql.append("SELECT '").append(MARKER).append("';").append(System.lineSeparator());
             sql.append(stripTrailingSemicolon(query)).append(';').append(System.lineSeparator());
@@ -207,6 +216,7 @@ public final class EGraphTrunkReferee {
             String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
             if (!process.waitFor(TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
                 process.destroyForcibly();
+                lastFailure = "timed out after " + TIMEOUT_SECONDS + "s with " + statementCount + " context statements";
                 return null;
             }
             // The exit code reflects the last statement that failed, context statements included, so
@@ -214,6 +224,8 @@ public final class EGraphTrunkReferee {
             // did not get that far.
             int marker = output.lastIndexOf(MARKER);
             if (marker < 0) {
+                lastFailure = "no marker in output; exit " + process.exitValue() + " after " + statementCount
+                        + " context statements";
                 return null;
             }
             int afterMarker = output.indexOf('\n', marker);
@@ -246,6 +258,33 @@ public final class EGraphTrunkReferee {
             lines.remove(lines.size() - 1);
         }
         return String.join("\n", lines.stream().map(line -> line.replaceAll("\\s+$", "")).toList());
+    }
+
+    /** Why the last run() gave no answer, for the log line that follows it. */
+    private static volatile String lastFailure = "";
+
+    /**
+     * Records a mismatch the referee could not judge. A count alone left no way to tell a timeout from a query the
+     * trunk build refused, and in a four hour capture every one of 127 attempts came back unanswered.
+     */
+    private static void unanswered(String reason, String detail, String query) {
+        String path = System.getProperty("egraph.referee.log");
+        if (path == null || path.isBlank()) {
+            return;
+        }
+        String entry = "-- EGRAPH_REFEREE UNANSWERED " + reason + System.lineSeparator() + "-- detail: "
+                + firstLines(String.valueOf(detail)) + System.lineSeparator() + query + System.lineSeparator()
+                + System.lineSeparator();
+        try {
+            Path file = Path.of(path);
+            if (file.getParent() != null) {
+                Files.createDirectories(file.getParent());
+            }
+            Files.writeString(file, entry, StandardCharsets.UTF_8, StandardOpenOption.CREATE,
+                    StandardOpenOption.APPEND);
+        } catch (IOException ignored) {
+            // The count still reaches the report.
+        }
     }
 
     private static String sortLines(String output) {
