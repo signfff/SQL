@@ -22,13 +22,22 @@ $ErrorActionPreference = "Stop"
 $coverageRoot = "D:\sqlancer\coverage\sqlite"
 
 function Resolve-LatestAutoReplay {
-    $latest = Get-ChildItem -LiteralPath $coverageRoot -Directory |
-        Where-Object {
-            $_.Name -notlike "auto-research-smoke-*" -and
-            (Test-Path -LiteralPath (Join-Path $_.FullName "auto-research-results.csv"))
-        } |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
+    # finish-long-codecov.ps1 writes its auto research into "<run dir>\auto-research", one level
+    # below the directories this used to scan, so the freshest results - the ones measured on the
+    # current build - were invisible here and a week-old directory kept winning on LastWriteTime.
+    # Measured when it did: the rebuilt corpus came out with 5 cases instead of 5000.
+    # start-long-codecov-capture.ps1 was fixed the same way; this is the same search.
+    $candidateDirs = New-Object System.Collections.Generic.List[object]
+    foreach ($dir in (Get-ChildItem -LiteralPath $coverageRoot -Directory)) {
+        if ($dir.Name -like "auto-research-smoke-*") { continue }
+        foreach ($relative in @("auto-research-results.csv", "auto-research\auto-research-results.csv")) {
+            $resultsFile = Join-Path $dir.FullName $relative
+            if (Test-Path -LiteralPath $resultsFile) {
+                $candidateDirs.Add((Get-Item -LiteralPath (Split-Path -Parent $resultsFile)))
+            }
+        }
+    }
+    $latest = $candidateDirs | Sort-Object LastWriteTime -Descending | Select-Object -First 1
     if (-not $latest) {
         throw "No auto-research result directory found under $coverageRoot"
     }
