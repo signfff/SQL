@@ -766,7 +766,17 @@ public final class Main {
                 if (!terminated) {
                     execService.shutdownNow();
                     if (!execService.awaitTermination(10, TimeUnit.SECONDS)) {
-                        return options.getErrorExitCode();
+                        // A worker that does not answer the interrupt - one inside a JDBC call, or a
+                        // loop that never checks - keeps its thread alive, and those threads are not
+                        // daemons, so returning here leaves the JVM running with the timeout long
+                        // past. Measured on a four hour capture: it was still testing at 5.86 hours
+                        // and only stopped when killed, which left the phase after it unable to
+                        // start. Leaving is the point of a timeout, so it is done here directly.
+                        System.err.printf(
+                                "SQLancer timed out after %d seconds and %d worker(s) ignored the interrupt; exiting.%n",
+                                options.getTimeoutSeconds(), Thread.activeCount());
+                        System.err.flush();
+                        System.exit(options.getErrorExitCode());
                     }
                 }
             }
