@@ -34,14 +34,6 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
         private final String source;
         private final boolean rowsTruncatedArbitrarily;
 
-        public GeneratedQuery(String originalQuery) {
-            this(originalQuery, originalQuery, Function.identity());
-        }
-
-        public GeneratedQuery(String originalQuery, String rewriteQuery, Function<String, String> variantWrapper) {
-            this(originalQuery, rewriteQuery, variantWrapper, "UNKNOWN");
-        }
-
         public GeneratedQuery(String originalQuery, String rewriteQuery, Function<String, String> variantWrapper,
                 String source) {
             this(originalQuery, rewriteQuery, variantWrapper, source, false);

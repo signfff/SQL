@@ -457,7 +457,7 @@ public class SQLite3Provider extends SQLProviderAdapter<SQLite3GlobalState, SQLi
         addSensiblePragmaDefaults(globalState);
         boolean executedSetupStatement = false;
         boolean schemaChanged = false;
-        for (String statement : SQLite3EGraphInputCorpus.readInitialSetupStatements(globalState.getDbmsSpecificOptions())) {
+        for (String statement : SQLite3EGraphInputCorpus.readSetupStatements(globalState.getDbmsSpecificOptions())) {
             try {
                 SQLQueryAdapter query = new SQLQueryAdapter(statement, corpusStatementCouldAffectSchema(statement));
                 if (query.execute(globalState, false)) {

@@ -3,11 +3,15 @@ package sqlancer.sqlite3.oracle;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import sqlancer.sqlite3.ast.SQLite3Case;
 import sqlancer.sqlite3.ast.SQLite3Constant;
 import sqlancer.sqlite3.ast.SQLite3Expression;
 import sqlancer.sqlite3.ast.SQLite3Expression.BetweenOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.BinaryComparisonOperation.BinaryComparisonOperator;
+import sqlancer.sqlite3.ast.SQLite3Expression.Cast;
+import sqlancer.sqlite3.ast.SQLite3Expression.CollateOperation;
+import sqlancer.sqlite3.ast.SQLite3Expression.Function;
 import sqlancer.sqlite3.ast.SQLite3Expression.InOperation;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3ColumnName;
 import sqlancer.sqlite3.ast.SQLite3Expression.SQLite3PostfixUnaryOperation;
@@ -523,7 +527,25 @@ public class EGraphPredicateFilter {
                 for (SQLite3Expression element : ((SQLite3RowValueExpression) e).getExpressions()) {
                     walk(element, depth + 1);
                 }
+            } else if (e instanceof Cast) {
+                walk(((Cast) e).getExpression(), depth + 1);
+            } else if (e instanceof CollateOperation) {
+                walk(((CollateOperation) e).getExpression(), depth + 1);
+            } else if (e instanceof Function) {
+                for (SQLite3Expression argument : ((Function) e).getArguments()) {
+                    walk(argument, depth + 1);
+                }
+            } else if (e instanceof SQLite3Case) {
+                SQLite3Case caseExpression = (SQLite3Case) e;
+                for (SQLite3Case.CasePair pair : caseExpression.getPairs()) {
+                    walk(pair.getCond(), depth + 1);
+                    walk(pair.getThen(), depth + 1);
+                }
+                walk(caseExpression.getElseExpr(), depth + 1);
             }
+            // Anything else is a shape this walk does not know. It is not rejected: the rewrite
+            // server keeps such a subtree as one opaque atom and its rules work around it. It simply
+            // contributes no column and no depth.
         }
 
         private static boolean isUnsupportedBinaryOperator(Sqlite3BinaryOperation.BinaryOperator op) {

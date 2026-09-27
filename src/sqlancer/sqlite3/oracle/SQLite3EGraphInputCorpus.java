@@ -73,10 +73,6 @@ public final class SQLite3EGraphInputCorpus {
         });
     }
 
-    public static List<String> readInitialSetupStatements(SQLite3Options options) {
-        return readSetupStatements(options);
-    }
-
     public static List<CorpusQueryInput> readQueryInputRecords(SQLite3Options options) {
         if (!isConfigured(options)) {
             return Collections.emptyList();
@@ -166,24 +162,8 @@ public final class SQLite3EGraphInputCorpus {
         if (normalized.matches(".*\\bSQLITE_(TEMP_)?(MASTER|SCHEMA|STAT1|STAT4)\\b.*")) {
             return "sqlite-internal-schema";
         }
-        // JOIN is rejected here because the base query used to be single-table. Since
-        // egraph.joinPercent the random path emits joins, so the corpus channel refusing them is
-        // inconsistent - and it blocks using any join-shaped bug report as a regression corpus.
-        // Opt-in for now: a corpus query spanning tables it did not create would fail to run.
-        String[] unsupportedTokens = Boolean.getBoolean("sqlite3.egraph.corpus.allowJoin")
-                ? new String[] {
-                        " WITH ", " MATCH ", " GROUP BY ", " HAVING ", " WINDOW ", " OVER ",
-                        " UNION ", " INTERSECT ", " EXCEPT ", " VALUES ", " INDEXED BY ", " RETURNING ",
-                        " PRAGMA ", " CREATE ", " INSERT ", " UPDATE ", " DELETE ", " DROP ", " ALTER ",
-                        " REINDEX ", " ANALYZE ", " VACUUM ", " TRIGGER " }
-                : new String[] {
-                " WITH ", " MATCH ", " JOIN ", " GROUP BY ", " HAVING ", " WINDOW ", " OVER ",
-                " UNION ", " INTERSECT ", " EXCEPT ", " VALUES ", " INDEXED BY ", " RETURNING ",
-                " PRAGMA ", " CREATE ", " INSERT ", " UPDATE ", " DELETE ", " DROP ", " ALTER ",
-                " REINDEX ", " ANALYZE ", " VACUUM ", " TRIGGER "
-        };
         String padded = " " + normalized + " ";
-        for (String token : unsupportedTokens) {
+        for (String token : UNSUPPORTED_CORPUS_TOKENS) {
             if (padded.contains(token)) {
                 return "unsupported-" + token.strip().replace(' ', '-').toLowerCase(Locale.ROOT);
             }
@@ -192,6 +172,27 @@ public final class SQLite3EGraphInputCorpus {
             return "derived-from";
         }
         return null;
+    }
+
+    /**
+     * Tokens that make a corpus SELECT unusable as an EGRAPH input. There used to be two copies of this list differing
+     * by one entry, so a token added to one was silently absent from the other.
+     */
+    private static final List<String> UNSUPPORTED_CORPUS_TOKENS = buildUnsupportedCorpusTokens();
+
+    private static List<String> buildUnsupportedCorpusTokens() {
+        List<String> tokens = new ArrayList<>(List.of(" WITH ", " MATCH ", " GROUP BY ", " HAVING ", " WINDOW ",
+                " OVER ", " UNION ", " INTERSECT ", " EXCEPT ", " VALUES ", " INDEXED BY ", " RETURNING ", " PRAGMA ",
+                " CREATE ", " INSERT ", " UPDATE ", " DELETE ", " DROP ", " ALTER ", " REINDEX ", " ANALYZE ",
+                " VACUUM ", " TRIGGER "));
+        // JOIN was rejected here because the base query used to be single-table. Since
+        // egraph.joinPercent the random path emits joins, so the corpus channel refusing them is
+        // inconsistent - and it blocks using any join-shaped bug report as a regression corpus.
+        // Opt-in for now: a corpus query spanning tables it did not create would fail to run.
+        if (!Boolean.getBoolean("sqlite3.egraph.corpus.allowJoin")) {
+            tokens.add(" JOIN ");
+        }
+        return Collections.unmodifiableList(tokens);
     }
 
     private static boolean isSetupStatement(String statement) {

@@ -4,7 +4,6 @@ use sqlparser::ast::{BinaryOperator, Expr as SqlExpr, Ident, UnaryOperator};
 use sqlparser::tokenizer::Span;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::str::FromStr;
 use std::sync::LazyLock;
 
 /// 变体校验日志默认静默：egraph-server 常以 `cargo run --release` 前台运行，
@@ -47,8 +46,6 @@ pub enum SqlLang {
     IsTrue([Id; 1]),
     IsNotFalse([Id; 1]),
     IsNotTrue([Id; 1]),
-    IsUnknown([Id; 1]),
-    IsNotUnknown([Id; 1]),
     Concat([Id; 2]),    // || string concatenation
     BitAnd([Id; 2]),    // & bitwise AND
     BitOr([Id; 2]),     // | bitwise OR
@@ -85,8 +82,6 @@ impl Language for SqlLang {
             SqlLang::IsTrue(c) => c,
             SqlLang::IsNotFalse(c) => c,
             SqlLang::IsNotTrue(c) => c,
-            SqlLang::IsUnknown(c) => c,
-            SqlLang::IsNotUnknown(c) => c,
             SqlLang::Concat(c) => c,
             SqlLang::BitAnd(c) => c,
             SqlLang::BitOr(c) => c,
@@ -119,8 +114,6 @@ impl Language for SqlLang {
             SqlLang::IsTrue(c) => c,
             SqlLang::IsNotFalse(c) => c,
             SqlLang::IsNotTrue(c) => c,
-            SqlLang::IsUnknown(c) => c,
-            SqlLang::IsNotUnknown(c) => c,
             SqlLang::Concat(c) => c,
             SqlLang::BitAnd(c) => c,
             SqlLang::BitOr(c) => c,
@@ -267,18 +260,6 @@ impl FromOp for SqlLang {
                     .map_err(|_| format!("isnottrue: expected 1 child"))?;
                 Ok(SqlLang::IsNotTrue(arr))
             }
-            "isunknown" => {
-                let arr: [Id; 1] = children
-                    .try_into()
-                    .map_err(|_| format!("isunknown: expected 1 child"))?;
-                Ok(SqlLang::IsUnknown(arr))
-            }
-            "isnotunknown" => {
-                let arr: [Id; 1] = children
-                    .try_into()
-                    .map_err(|_| format!("isnotunknown: expected 1 child"))?;
-                Ok(SqlLang::IsNotUnknown(arr))
-            }
             "concat" => {
                 let arr: [Id; 2] = children
                     .try_into()
@@ -338,56 +319,11 @@ impl fmt::Display for SqlLang {
             SqlLang::IsTrue(_) => write!(f, "istrue"),
             SqlLang::IsNotFalse(_) => write!(f, "isnotfalse"),
             SqlLang::IsNotTrue(_) => write!(f, "isnottrue"),
-            SqlLang::IsUnknown(_) => write!(f, "isunknown"),
-            SqlLang::IsNotUnknown(_) => write!(f, "isnotunknown"),
             SqlLang::Concat(_) => write!(f, "concat"),
             SqlLang::BitAnd(_) => write!(f, "bitand"),
             SqlLang::BitOr(_) => write!(f, "bitor"),
             SqlLang::Remainder(_) => write!(f, "rem"),
             SqlLang::Symbol(k) => write!(f, "{}", k),
-        }
-    }
-}
-
-impl FromStr for SqlLang {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "and" => Ok(SqlLang::And([Id::from(0), Id::from(0)])),
-            "or" => Ok(SqlLang::Or([Id::from(0), Id::from(0)])),
-            "not" => Ok(SqlLang::Not([Id::from(0)])),
-            "=" => Ok(SqlLang::Eq([Id::from(0), Id::from(0)])),
-            "<>" => Ok(SqlLang::NotEq([Id::from(0), Id::from(0)])),
-            "<" => Ok(SqlLang::Lt([Id::from(0), Id::from(0)])),
-            ">" => Ok(SqlLang::Gt([Id::from(0), Id::from(0)])),
-            "<=" => Ok(SqlLang::LtEq([Id::from(0), Id::from(0)])),
-            ">=" => Ok(SqlLang::GtEq([Id::from(0), Id::from(0)])),
-            "+" => Ok(SqlLang::Add([Id::from(0), Id::from(0)])),
-            "-" => Ok(SqlLang::Sub([Id::from(0), Id::from(0)])),
-            "*" => Ok(SqlLang::Mul([Id::from(0), Id::from(0)])),
-            "/" => Ok(SqlLang::Div([Id::from(0), Id::from(0)])),
-            "neg" => Ok(SqlLang::Neg([Id::from(0)])),
-            "bitnot" => Ok(SqlLang::BitNot([Id::from(0)])),
-            "between" => Ok(SqlLang::Between([Id::from(0), Id::from(0), Id::from(0)])),
-            "isnull" => Ok(SqlLang::IsNull([Id::from(0)])),
-            "isnotnull" => Ok(SqlLang::IsNotNull([Id::from(0)])),
-            "isfalse" => Ok(SqlLang::IsFalse([Id::from(0)])),
-            "istrue" => Ok(SqlLang::IsTrue([Id::from(0)])),
-            "isnotfalse" => Ok(SqlLang::IsNotFalse([Id::from(0)])),
-            "isnottrue" => Ok(SqlLang::IsNotTrue([Id::from(0)])),
-            "isunknown" => Ok(SqlLang::IsUnknown([Id::from(0)])),
-            "isnotunknown" => Ok(SqlLang::IsNotUnknown([Id::from(0)])),
-            "concat" => Ok(SqlLang::Concat([Id::from(0), Id::from(0)])),
-            "bitand" => Ok(SqlLang::BitAnd([Id::from(0), Id::from(0)])),
-            "bitor" => Ok(SqlLang::BitOr([Id::from(0), Id::from(0)])),
-            "rem" => Ok(SqlLang::Remainder([Id::from(0), Id::from(0)])),
-            _ => {
-                // Try parsing as a u64 Symbol value
-                s.parse::<u64>()
-                    .map(SqlLang::Symbol)
-                    .map_err(|_| format!("unknown operator: '{}'", s))
-            }
         }
     }
 }
@@ -620,14 +556,6 @@ fn sql_expr_to_recexpr_impl(
             let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
             rec.add(SqlLang::IsNotTrue([child]))
         }
-        SqlExpr::IsUnknown(inner) => {
-            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
-            rec.add(SqlLang::IsUnknown([child]))
-        }
-        SqlExpr::IsNotUnknown(inner) => {
-            let child = sql_expr_to_recexpr_impl(inner, rec, symbols, counter, dedup, source_sql);
-            rec.add(SqlLang::IsNotUnknown([child]))
-        }
 
         SqlExpr::Nested(inner) => {
             // Parentheses are transparent
@@ -676,9 +604,115 @@ pub fn contains_row_value(expr: &SqlExpr) -> bool {
         | SqlExpr::IsNotFalse(inner)
         | SqlExpr::IsUnknown(inner)
         | SqlExpr::IsNotUnknown(inner) => contains_row_value(inner),
+        // An IN is where the row-value reports actually live - `(a, b) IN (SELECT ...)` is the shape
+        // of the min() report this tool rediscovered on its own. These two arms were missing, so a
+        // tuple hiding in an IN reached the rules that the arms above exist to keep it away from.
+        SqlExpr::InList {
+            expr: inner, list, ..
+        } => {
+            contains_row_value(inner) || list.iter().any(contains_row_value)
+        }
+        SqlExpr::InSubquery { expr: inner, .. } => contains_row_value(inner),
         _ => false,
     }
 }
+
+/// Does this predicate compare two sides that could carry different column collations?
+///
+/// SQLite picks the collation of a comparison from its operands, and when neither carries an
+/// explicit COLLATE the left operand's implicit one wins, falling back to the right's. Swapping the
+/// sides therefore swaps which column's declared collation decides the answer. Measured on SQLite
+/// 3.54 with `a TEXT COLLATE NOCASE` and `b TEXT` holding 'ABC' and 'abc': `a = b` is 1 and `b = a`
+/// is 0, and `a < b` is 0 while `b > a` is 1. SQLancer declares a column collation with small
+/// probability, so this is reachable, and the six rules that turn a comparison around would have
+/// reported it as a result mismatch.
+///
+/// The implicit collation travels up through parentheses, CAST and a unary sign, and stops at a
+/// function call or a concatenation - also measured. Rather than model that, a side counts as
+/// collation-bearing when it mentions a column anywhere, which can only withhold a rewrite that
+/// would have been sound. Two sides spelled the same way are the same collation whatever it is, so
+/// `c0 = c0` stays rewritable, and that is the common case in generated predicates.
+pub fn compares_columns_of_unknown_collation(expr: &SqlExpr) -> bool {
+    match expr {
+        SqlExpr::Nested(inner) => compares_columns_of_unknown_collation(inner),
+        SqlExpr::UnaryOp { expr: inner, .. } => compares_columns_of_unknown_collation(inner),
+        SqlExpr::BinaryOp { left, op, right } => {
+            if is_collation_sensitive_operator(op)
+                && mentions_a_column(left)
+                && mentions_a_column(right)
+                && left.to_string() != right.to_string()
+            {
+                return true;
+            }
+            compares_columns_of_unknown_collation(left)
+                || compares_columns_of_unknown_collation(right)
+        }
+        SqlExpr::Between {
+            expr: inner,
+            low,
+            high,
+            ..
+        } => {
+            if mentions_a_column(inner) && (mentions_a_column(low) || mentions_a_column(high)) {
+                let inner_text = inner.to_string();
+                if inner_text != low.to_string() || inner_text != high.to_string() {
+                    return true;
+                }
+            }
+            compares_columns_of_unknown_collation(inner)
+                || compares_columns_of_unknown_collation(low)
+                || compares_columns_of_unknown_collation(high)
+        }
+        SqlExpr::IsNull(inner)
+        | SqlExpr::IsNotNull(inner)
+        | SqlExpr::IsTrue(inner)
+        | SqlExpr::IsFalse(inner)
+        | SqlExpr::IsNotTrue(inner)
+        | SqlExpr::IsNotFalse(inner)
+        | SqlExpr::IsUnknown(inner)
+        | SqlExpr::IsNotUnknown(inner) => compares_columns_of_unknown_collation(inner),
+        _ => false,
+    }
+}
+
+fn is_collation_sensitive_operator(op: &BinaryOperator) -> bool {
+    matches!(
+        op,
+        BinaryOperator::Eq
+            | BinaryOperator::NotEq
+            | BinaryOperator::Lt
+            | BinaryOperator::Gt
+            | BinaryOperator::LtEq
+            | BinaryOperator::GtEq
+    )
+}
+
+/// Whether a subexpression mentions a column at all. An explicit COLLATE makes the side's collation
+/// its own whichever way round it is written, so such a side is not a reason to withhold anything.
+fn mentions_a_column(expr: &SqlExpr) -> bool {
+    match expr {
+        SqlExpr::Identifier(_) | SqlExpr::CompoundIdentifier(_) => true,
+        SqlExpr::Collate { .. } => false,
+        SqlExpr::Value(_) => false,
+        SqlExpr::Nested(inner) => mentions_a_column(inner),
+        SqlExpr::UnaryOp { expr: inner, .. } => mentions_a_column(inner),
+        SqlExpr::Cast { expr: inner, .. } => mentions_a_column(inner),
+        SqlExpr::BinaryOp { left, right, .. } => mentions_a_column(left) || mentions_a_column(right),
+        SqlExpr::Function(_) => false,
+        other => other.to_string().chars().any(|c| c.is_alphabetic()),
+    }
+}
+
+/// The rules that turn a comparison around. Withheld for a query where doing so could change which
+/// column's collation decides the answer - see compares_columns_of_unknown_collation.
+const OPERAND_SWAPPING_RULES: &[&str] = &[
+    "eq-sym",
+    "noteq-sym",
+    "gt-to-lt",
+    "lt-to-gt",
+    "gteq-to-lteq",
+    "lteq-to-gteq",
+];
 
 //  RecExpr<SqlLang> ?sqlparser Expr
 
@@ -832,12 +866,6 @@ fn recexpr_to_sql_expr_impl(expr: &RecExpr<SqlLang>, id: Id, symbols: &SymbolTab
         SqlLang::IsNotTrue([c]) => SqlExpr::IsNotTrue(Box::new(wrap_compound(
             recexpr_to_sql_expr_impl(expr, *c, symbols),
         ))),
-        SqlLang::IsUnknown([c]) => SqlExpr::IsUnknown(Box::new(wrap_compound(
-            recexpr_to_sql_expr_impl(expr, *c, symbols),
-        ))),
-        SqlLang::IsNotUnknown([c]) => SqlExpr::IsNotUnknown(Box::new(wrap_compound(
-            recexpr_to_sql_expr_impl(expr, *c, symbols),
-        ))),
     }
 }
 
@@ -945,20 +973,29 @@ fn location_to_byte_offset(source_sql: &str, line: u64, column: u64) -> Option<u
     None
 }
 
+/// Parenthesises a subexpression before it is written into a larger one.
+///
+/// The list used to say which shapes need brackets, and everything unnamed went out bare. That is
+/// the wrong way round, because what goes out bare includes every shape this language keeps as an
+/// opaque atom - an IN, a LIKE, a COLLATE. Measured: `(c1 COLLATE NOCASE) - (c2 IN (c2))` came back
+/// as `c1 COLLATE NOCASE - c2 IN (c2)`, which SQLite reads as `((c1 COLLATE NOCASE) - c2) IN (c2)`,
+/// a different question - and the oracle reported the different answer as a defect.
+///
+/// So the list now says which shapes are already a single primary. An extra pair of brackets around
+/// anything else costs nothing; a missing pair changes the meaning.
 fn wrap_compound(expr: SqlExpr) -> SqlExpr {
     match &expr {
-        SqlExpr::BinaryOp { .. }
-        | SqlExpr::UnaryOp { .. }
-        | SqlExpr::Between { .. }
-        | SqlExpr::IsNull(_)
-        | SqlExpr::IsNotNull(_)
-        | SqlExpr::IsFalse(_)
-        | SqlExpr::IsNotFalse(_)
-        | SqlExpr::IsTrue(_)
-        | SqlExpr::IsNotTrue(_)
-        | SqlExpr::IsUnknown(_)
-        | SqlExpr::IsNotUnknown(_) => SqlExpr::Nested(Box::new(expr)),
-        _ => expr,
+        SqlExpr::Identifier(_)
+        | SqlExpr::CompoundIdentifier(_)
+        | SqlExpr::Value(_)
+        | SqlExpr::Nested(_)
+        | SqlExpr::Function(_)
+        | SqlExpr::Cast { .. }
+        | SqlExpr::Tuple(_)
+        | SqlExpr::Subquery(_)
+        | SqlExpr::Wildcard(..)
+        | SqlExpr::QualifiedWildcard(..) => expr,
+        _ => SqlExpr::Nested(Box::new(expr)),
     }
 }
 
@@ -986,10 +1023,13 @@ fn disabled_rules() -> std::collections::HashSet<String> {
         .unwrap_or_default()
 }
 
-fn make_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
+fn make_rewrite_rules(allow_operand_swap: bool) -> Vec<Rewrite<SqlLang, ()>> {
     let mut rules = make_base_rewrite_rules();
     if extra_rules_enabled() {
         rules.extend(make_extra_comparison_rules());
+    }
+    if !allow_operand_swap {
+        rules.retain(|r| !OPERAND_SWAPPING_RULES.contains(&r.name.as_str()));
     }
     let off = disabled_rules();
     if !off.is_empty() {
@@ -1133,8 +1173,6 @@ fn make_base_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         //
         // IS UNKNOWN / IS NOT UNKNOWN ?fully equivalent in all SQL contexts,
         // safe to rewrite.
-        rewrite!("isunknown-to-isnull"; "(isunknown ?x)" => "(isnull ?x)"),
-        rewrite!("isnotunknown-to-isnotnull"; "(isnotunknown ?x)" => "(isnotnull ?x)"),
         // The reverse direction is DISABLED: SQLite does not implement IS UNKNOWN / IS NOT UNKNOWN.
         // It parses UNKNOWN as an identifier, so every such variant dies with
         // "no such column: UNKNOWN". The earlier claim that the two spellings are "equivalent in
@@ -1244,8 +1282,12 @@ fn time_limit_ms() -> u64 {
     std::env::var("EGRAPH_TIME_LIMIT_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(40)
 }
 
-pub fn perform_rewrites(expr: &RecExpr<SqlLang>, iter_limit: usize) -> (EGraph<SqlLang, ()>, Id) {
-    let rules = make_rewrite_rules();
+pub fn perform_rewrites(
+    expr: &RecExpr<SqlLang>,
+    iter_limit: usize,
+    allow_operand_swap: bool,
+) -> (EGraph<SqlLang, ()>, Id) {
+    let rules = make_rewrite_rules(allow_operand_swap);
     let runner = Runner::default()
         .with_iter_limit(iter_limit)
         .with_node_limit(node_limit())
@@ -1312,7 +1354,8 @@ fn extract_randomized_impl(
     if path.contains(&id) {
         for node in &egraph[id].nodes {
             if node.children().is_empty() {
-                return Some(add_node(rec, node));
+                // A childless node has nothing to re-point, so it can be copied as it stands.
+                return Some(rec.add(node.clone()));
             }
         }
         return None;
@@ -1364,20 +1407,11 @@ fn make_node(template: &SqlLang, child_ids: &[Id]) -> SqlLang {
         SqlLang::IsTrue(_) => SqlLang::IsTrue([child_ids[0]]),
         SqlLang::IsNotFalse(_) => SqlLang::IsNotFalse([child_ids[0]]),
         SqlLang::IsNotTrue(_) => SqlLang::IsNotTrue([child_ids[0]]),
-        SqlLang::IsUnknown(_) => SqlLang::IsUnknown([child_ids[0]]),
-        SqlLang::IsNotUnknown(_) => SqlLang::IsNotUnknown([child_ids[0]]),
         SqlLang::Concat(_) => SqlLang::Concat([child_ids[0], child_ids[1]]),
         SqlLang::BitAnd(_) => SqlLang::BitAnd([child_ids[0], child_ids[1]]),
         SqlLang::BitOr(_) => SqlLang::BitOr([child_ids[0], child_ids[1]]),
         SqlLang::Remainder(_) => SqlLang::Remainder([child_ids[0], child_ids[1]]),
         SqlLang::Symbol(k) => SqlLang::Symbol(*k),
-    }
-}
-
-fn add_node(rec: &mut RecExpr<SqlLang>, node: &SqlLang) -> Id {
-    match node {
-        SqlLang::Symbol(k) => rec.add(SqlLang::Symbol(*k)),
-        _ => rec.add(SqlLang::Symbol(0)),
     }
 }
 
@@ -1630,12 +1664,6 @@ fn eval(
             truth_value(&eval(expr, *c, symbols, assignment)),
             SqlValue::Bool(true)
         )),
-        //  IS UNKNOWN: same as IS NULL
-        SqlLang::IsUnknown([c]) => SqlValue::Bool(eval(expr, *c, symbols, assignment).is_null()),
-        //  IS NOT UNKNOWN: same as IS NOT NULL
-        SqlLang::IsNotUnknown([c]) => {
-            SqlValue::Bool(!eval(expr, *c, symbols, assignment).is_null())
-        }
     }
 }
 
@@ -1919,11 +1947,11 @@ fn random_assignment<R: rand::Rng>(
     let edge_count = EDGE_VALUES.len() as i64;
 
     for &sym in symbol_ids {
-        // Check whether this symbol has a fixed type pool
-        let typed_pool: Option<&[SqlValue]> = symbols
-            .get(&sym)
-            .and_then(|e| classify_symbol(e))
-            .map(|v| Box::leak(v.into_boxed_slice()) as &[SqlValue]); // leak is fine ?tiny, process-lived
+        // Check whether this symbol has a fixed type pool. It used to be leaked on the grounds of
+        // being tiny and process-lived, but this runs once per symbol per validation sample, and a
+        // sample is taken hundreds of times for every request a long run makes - so the leak grew
+        // with the run rather than with the rule set. A local owns it now.
+        let typed_pool: Option<Vec<SqlValue>> = symbols.get(&sym).and_then(|e| classify_symbol(e));
 
         if let Some(pool) = typed_pool {
             // Pick from the typed pool
@@ -2319,6 +2347,14 @@ const NONDETERMINISTIC_MARKERS: [&str; 9] = [
 /// the predicate apart. They leave the truth value alone under three-valued logic - NULL stays
 /// NULL through a double negation and through `p AND p` / `p OR p` - but they change the shape
 /// the query planner sees, which is what decides whether an index is used.
+/// Whether a predicate may answer differently on a second evaluation.
+pub fn is_nondeterministic(expr: &SqlExpr) -> bool {
+    let rendered = expr.to_string().to_lowercase();
+    NONDETERMINISTIC_MARKERS
+        .iter()
+        .any(|marker| rendered.contains(marker))
+}
+
 fn identity_variants(where_expr: &SqlExpr, source_sql: &str, max_variants: usize) -> Vec<SqlExpr> {
     if max_variants == 0 {
         return Vec::new();
@@ -2331,11 +2367,7 @@ fn identity_variants(where_expr: &SqlExpr, source_sql: &str, max_variants: usize
     };
     let mut variants = vec![not(nested(&not(nested(&predicate))))];
 
-    let rendered = format!("{}", predicate).to_lowercase();
-    let repeatable = !NONDETERMINISTIC_MARKERS
-        .iter()
-        .any(|marker| rendered.contains(marker));
-    if repeatable {
+    if !is_nondeterministic(&predicate) {
         for op in [BinaryOperator::And, BinaryOperator::Or] {
             variants.push(SqlExpr::BinaryOp {
                 left: Box::new(nested(&predicate)),
@@ -2357,6 +2389,16 @@ pub fn generate_equivalent_where_clauses(
 ) -> Result<Vec<SqlExpr>, String> {
     let (recexpr, symbols) = sql_expr_to_recexpr(where_expr, source_sql);
 
+    // A predicate that can answer differently each time it is evaluated may not be written down
+    // twice, and half the rule set does exactly that: eq-to-tight turns `x = y` into
+    // `x >= y AND x <= y`, and the distribution and factoring rules copy a whole side. The marker
+    // check used to guard only the atom path, so a predicate calling random() reached the rules
+    // through every other path. identity_variants already knows to offer only the single-evaluation
+    // identity for such a predicate.
+    if is_nondeterministic(where_expr) {
+        return Ok(identity_variants(where_expr, source_sql, max_variants));
+    }
+
     let root = Id::from(recexpr.as_ref().len() - 1);
     if matches!(recexpr[root], SqlLang::Symbol(_)) {
         // The whole WHERE is one atom this language has no node for - a row-value IN, an
@@ -2366,7 +2408,11 @@ pub fn generate_equivalent_where_clauses(
         return Ok(identity_variants(where_expr, source_sql, max_variants));
     }
 
-    let (egraph, root) = perform_rewrites(&recexpr, iter_limit);
+    let (egraph, root) = perform_rewrites(
+        &recexpr,
+        iter_limit,
+        !compares_columns_of_unknown_collation(where_expr),
+    );
 
     // Extract more variants than needed ?validation will filter some out.
     let variants = extract_variants(&egraph, root, max_variants * 5);
@@ -2545,6 +2591,67 @@ mod tests {
     fn true_and_one_are_the_same_value() {
         assert_eq!(eval_predicate("TRUE = 1"), SqlValue::Bool(true));
         assert_eq!(eval_predicate("FALSE = 0"), SqlValue::Bool(true));
+    }
+
+    #[test]
+    fn a_comparison_of_two_columns_withholds_the_swap_rules() {
+        // Measured on SQLite 3.54: with `a TEXT COLLATE NOCASE` and `b TEXT`, `a = b` is 1 and
+        // `b = a` is 0, so turning the comparison around is not an equivalence.
+        assert!(compares_columns_of_unknown_collation(&parse_predicate(
+            "SELECT 1 FROM t WHERE a = b"
+        )));
+        assert!(compares_columns_of_unknown_collation(&parse_predicate(
+            "SELECT 1 FROM t WHERE t.a < t.b"
+        )));
+        assert!(compares_columns_of_unknown_collation(&parse_predicate(
+            "SELECT 1 FROM t WHERE a > 1 AND (b <= c)"
+        )));
+        assert!(compares_columns_of_unknown_collation(&parse_predicate(
+            "SELECT 1 FROM t WHERE a BETWEEN b AND b"
+        )));
+
+        // The same side twice is the same collation whatever it is, and a literal has none.
+        assert!(!compares_columns_of_unknown_collation(&parse_predicate(
+            "SELECT 1 FROM t WHERE a = a"
+        )));
+        assert!(!compares_columns_of_unknown_collation(&parse_predicate(
+            "SELECT 1 FROM t WHERE a > 3 AND b < 5"
+        )));
+        assert!(!compares_columns_of_unknown_collation(&parse_predicate(
+            "SELECT 1 FROM t WHERE a IS NULL"
+        )));
+
+        let withheld = make_rewrite_rules(false);
+        for name in OPERAND_SWAPPING_RULES {
+            assert!(
+                !withheld.iter().any(|r| r.name.as_str() == *name),
+                "{} should be withheld",
+                name
+            );
+        }
+        assert!(make_rewrite_rules(true)
+            .iter()
+            .any(|r| r.name.as_str() == "eq-sym"));
+    }
+
+    #[test]
+    fn an_opaque_atom_keeps_its_brackets() {
+        // Measured: this came back as `c1 COLLATE NOCASE - c2 IN (c2)`, which SQLite reads as
+        // `((c1 COLLATE NOCASE) - c2) IN (c2)` - a different question, reported as a defect.
+        let sql = "SELECT * FROM t0 WHERE (t0.c1 COLLATE NOCASE) - (t0.c2 IN (t0.c2))";
+        let expr = parse_predicate(sql);
+        let (recexpr, symbols) = sql_expr_to_recexpr(&expr, sql);
+        let rendered = recexpr_to_sql_expr(&recexpr, &symbols).to_string();
+        assert!(
+            rendered.contains("(t0.c2 IN (t0.c2))"),
+            "the IN lost its brackets: {}",
+            rendered
+        );
+        assert!(
+            rendered.contains("(t0.c1 COLLATE NOCASE)"),
+            "the COLLATE lost its brackets: {}",
+            rendered
+        );
     }
 
     #[test]

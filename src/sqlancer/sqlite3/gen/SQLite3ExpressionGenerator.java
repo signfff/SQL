@@ -286,13 +286,20 @@ public class SQLite3ExpressionGenerator implements ExpressionGenerator<SQLite3Ex
         if (!globalState.getDbmsSpecificOptions().testIn) {
             list.remove(ExpressionType.IN_OPERATOR);
         }
-        // EGRAPH mode: only generate expression types that the egraph rewrite engine can handle
+        // EGRAPH mode: only generate expression types that the egraph rewrite engine can handle.
+        //
+        // CAST, FUNCTION, IN, COLLATE and CASE used to be removed here as well, on the belief that
+        // the rewrite server could not take them. Asked directly, it answers 8, 8, 3, 8 and 3
+        // variants for one predicate of each, all of them correct: what it cannot model becomes one
+        // opaque atom and the boolean and comparison rules keep working around it. So the only cost
+        // of removing them was a predicate grammar narrower than the engine's own, in exactly the
+        // corners - affinity, collation, IN-to-EXISTS - where SQLite has the most code to get wrong.
+        //
+        // MATCH and ROW_VALUE_COMPARISON stay out, also measured: the server answers 400 for MATCH,
+        // whose syntax its parser does not take, and 0 variants for a row value, which it refuses on
+        // purpose because SQLite gives tuples a second set of NULL rules. An aggregate is not legal
+        // in a WHERE clause at all, and RANDOM_QUERY is a subquery this generator cannot bound.
         if (egraphMode) {
-            list.remove(ExpressionType.CAST_EXPRESSION);
-            list.remove(ExpressionType.FUNCTION);
-            list.remove(ExpressionType.IN_OPERATOR);
-            list.remove(ExpressionType.COLLATE);
-            list.remove(ExpressionType.CASE_OPERATOR);
             list.remove(ExpressionType.MATCH);
             list.remove(ExpressionType.AGGREGATE_FUNCTION);
             list.remove(ExpressionType.ROW_VALUE_COMPARISON);

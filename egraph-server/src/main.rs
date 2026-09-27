@@ -205,8 +205,13 @@ fn restore_integer_hex(rendered: &str, source_sql: &str) -> String {
                 }
             }
         }
-        out.push(bytes[i] as char);
-        i += 1;
+        // `bytes[i] as char` reads one byte as a code point, which is Latin-1, not UTF-8: a byte of
+        // 0xE4 came out as 'ä' and re-encoded as two bytes, so any non-ASCII text in the query was
+        // corrupted on its way through here. Copy whole characters instead. The scan above only ever
+        // matches ASCII bytes, and those never appear inside a multi-byte sequence, so it stays put.
+        let ch = rendered[i..].chars().next().expect("index is on a boundary");
+        out.push(ch);
+        i += ch.len_utf8();
     }
     out
 }
