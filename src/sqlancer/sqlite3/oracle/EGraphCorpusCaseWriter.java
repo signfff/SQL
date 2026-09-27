@@ -33,6 +33,13 @@ public final class EGraphCorpusCaseWriter {
     private static final int MAX_CASES = Integer.getInteger("sqlite3.egraph.corpus.maxCases", 5000);
     private static final int MAX_EMPTY_CASES = Integer.getInteger("sqlite3.egraph.corpus.maxEmptyCases", 1000);
     private static final int MAX_ROWS_PER_TABLE = Integer.getInteger("sqlite3.egraph.corpus.maxRowsPerTable", 200);
+    /**
+     * Rows of one table a snapshot keeps. Separate from the row cap above because the reader also limits a case to
+     * 12000 characters, and a wide row measured 3.8 KB - three of those already exceed it, however few statements they
+     * are written as.
+     */
+    private static final int MAX_SNAPSHOT_ROWS_PER_TABLE = Integer
+            .getInteger("sqlite3.egraph.corpus.maxSnapshotRowsPerTable", 24);
     // Capture every N-th case so the recorded window spans the whole long run
     // instead of just its first minutes. Default 1 keeps the old behavior.
     private static final int SAMPLE_INTERVAL = Integer.getInteger("sqlite3.egraph.corpus.sampleInterval", 1);
@@ -49,6 +56,17 @@ public final class EGraphCorpusCaseWriter {
     // (database, schema_version, total_changes) triple as the previous case.
     private static final boolean SNAPSHOT_CACHE = !"false"
             .equalsIgnoreCase(System.getProperty("sqlite3.egraph.corpus.snapshotCache", "true"));
+    /** Room for one table's rows in a single INSERT, kept under the reader's per-statement limit of 2000. */
+    private static final int MAX_INSERT_STATEMENT_CHARS = Integer
+            .getInteger("sqlite3.egraph.corpus.maxInsertStatementChars", 1800);
+    /**
+     * Write only the objects the case's query needs, rather than the whole database. The reader accepts a case whose
+     * setup is at most 80 statements; measured on the accumulated corpus, the median snapshot was 3205 and only 4.2%
+     * of them could be loaded, with 88% of the statements in the rest belonging to probe tables the query never names.
+     * False restores the whole-database snapshot.
+     */
+    private static final boolean SNAPSHOT_ONLY_REFERENCED = !"false"
+            .equalsIgnoreCase(System.getProperty("sqlite3.egraph.corpus.snapshotOnlyReferenced", "true"));
     private static String cachedSnapshotKey;
     private static List<String> cachedSnapshotSetup = List.of();
     private static SnapshotStructure lastWrittenSnapshot;
@@ -86,7 +104,7 @@ public final class EGraphCorpusCaseWriter {
             return;
         }
         SQLite3GlobalState sqliteState = (SQLite3GlobalState) state;
-        List<String> setupStatements = obtainSnapshotSetup(sqliteState);
+        List<String> setupStatements = obtainSnapshotSetup(sqliteState, baseQuery);
         List<String> additionalReplayQueries = normalizeReplayQueries(baseQuery, replayQueries);
         if (setupStatements.isEmpty()) {
             return;
@@ -153,16 +171,24 @@ public final class EGraphCorpusCaseWriter {
      * that neither the schema nor any row has changed since then. A snapshot costs a full scan per table, so skipping
      * it for unchanged databases is what makes dense case capture affordable.
      */
-    private static List<String> obtainSnapshotSetup(SQLite3GlobalState state) {
+    private static List<String> obtainSnapshotSetup(SQLite3GlobalState state, String baseQuery) {
+        // What the case actually needs. A context refresh leaves dozens of probe tables standing,
+        // and writing all of them made the median snapshot 3205 statements against a reader that
+        // accepts 80: of the 8761 snapshots in the accumulated corpus, 4.2% could be loaded at all,
+        // and 88% of the statements in the rest belonged to probe tables the query never names.
+        Set<String> referenced = SNAPSHOT_ONLY_REFERENCED ? referencedObjects(state, baseQuery) : null;
         if (!SNAPSHOT_CACHE) {
-            return createSnapshotSetup(state);
+            return createSnapshotSetup(state, referenced);
         }
         synchronized (EGraphCorpusCaseWriter.class) {
             String key = snapshotKey(state);
+            if (key != null && referenced != null) {
+                key = key + "|" + new java.util.TreeSet<>(referenced);
+            }
             if (key != null && key.equals(cachedSnapshotKey) && !cachedSnapshotSetup.isEmpty()) {
                 return cachedSnapshotSetup;
             }
-            List<String> setup = createSnapshotSetup(state);
+            List<String> setup = createSnapshotSetup(state, referenced);
             if (key != null && !setup.isEmpty()) {
                 cachedSnapshotKey = key;
                 cachedSnapshotSetup = setup;
@@ -214,21 +240,24 @@ public final class EGraphCorpusCaseWriter {
         return true;
     }
 
-    private static List<String> createSnapshotSetup(SQLite3GlobalState state) {
+    /**
+     * @param referenced the objects the case needs, or null to write the whole database
+     */
+    private static List<String> createSnapshotSetup(SQLite3GlobalState state, Set<String> referenced) {
         List<String> setup = new ArrayList<>();
         try {
             state.updateSchema();
-            setup.addAll(createCleanupStatements(state));
-            setup.addAll(readSchemaSql(state, "table"));
-            setup.addAll(createFallbackTableStatements(state));
+            setup.addAll(createCleanupStatements(state, referenced));
+            setup.addAll(readSchemaSql(state, "table", referenced));
+            setup.addAll(createFallbackTableStatements(state, referenced));
             // 索引放在数据之前：源库里索引先存在、插入时逐行拦截违反唯一索引的行，
             // 而旧顺序（数据在前）让所有行先落地，再建唯一索引就必然失败
             // ——长跑里 15 次 "UNIQUE constraint failed" 全是这么来的。
             // 顺序对齐后重放会像源库一样逐行拦截，状态也更忠实。
-            setup.addAll(readSchemaSql(state, "index"));
-            setup.addAll(createInsertStatements(state));
-            setup.addAll(readSchemaSql(state, "view"));
-            setup.addAll(readSchemaSql(state, "trigger"));
+            setup.addAll(readSchemaSql(state, "index", referenced));
+            setup.addAll(createInsertStatements(state, referenced));
+            setup.addAll(readSchemaSql(state, "view", referenced));
+            setup.addAll(readSchemaSql(state, "trigger", referenced));
             setup.add("ANALYZE");
         } catch (Exception ignored) {
             return List.of();
@@ -448,25 +477,34 @@ public final class EGraphCorpusCaseWriter {
         return trimmed;
     }
 
-    private static List<String> createCleanupStatements(SQLite3GlobalState state) {
+    private static List<String> createCleanupStatements(SQLite3GlobalState state, Set<String> referenced) {
         List<String> result = new ArrayList<>();
         List<String> views = readSchemaObjectNames(state, "view");
         List<String> triggers = readSchemaObjectNames(state, "trigger");
         List<String> tables = readSchemaObjectNames(state, "table");
         tables.sort((left, right) -> Integer.compare(right.length(), left.length()));
+        // Only what this snapshot recreates is dropped. Dropping the rest would leave the replay
+        // database without the probe tables an earlier case in the same file still needs.
         for (String trigger : triggers) {
-            result.add("DROP TRIGGER IF EXISTS " + quoteIdentifier(trigger));
+            if (isKept(referenced, trigger)) {
+                result.add("DROP TRIGGER IF EXISTS " + quoteIdentifier(trigger));
+            }
         }
         for (String view : views) {
-            result.add("DROP VIEW IF EXISTS " + quoteIdentifier(view));
+            if (isKept(referenced, view)) {
+                result.add("DROP VIEW IF EXISTS " + quoteIdentifier(view));
+            }
         }
         for (String table : tables) {
-            result.add("DROP TABLE IF EXISTS " + quoteIdentifier(table));
+            if (isKept(referenced, table)) {
+                result.add("DROP TABLE IF EXISTS " + quoteIdentifier(table));
+            }
         }
         Set<String> seen = new HashSet<>(tables);
         for (SQLite3Table table : state.getSchema().getDatabaseTables()) {
             if (table.isView() || table.isVirtual() || table.getColumns().isEmpty()
-                    || isInternalEGraphObject(table.getName()) || !seen.add(table.getName())) {
+                    || isInternalEGraphObject(table.getName()) || !seen.add(table.getName())
+                    || !isKept(referenced, table.getName())) {
                 continue;
             }
             result.add("DROP TABLE IF EXISTS " + quoteIdentifier(table.getName()));
@@ -474,11 +512,11 @@ public final class EGraphCorpusCaseWriter {
         return result;
     }
 
-    private static List<String> createFallbackTableStatements(SQLite3GlobalState state) {
+    private static List<String> createFallbackTableStatements(SQLite3GlobalState state, Set<String> referenced) {
         List<String> result = new ArrayList<>();
         for (SQLite3Table table : state.getSchema().getDatabaseTables()) {
             if (table.isView() || table.isVirtual() || table.getColumns().isEmpty()
-                    || isInternalEGraphObject(table.getName())) {
+                    || isInternalEGraphObject(table.getName()) || !isKept(referenced, table.getName())) {
                 continue;
             }
             List<SQLite3Column> columns = table.getColumns().stream().filter(c -> !c.isGenerated())
@@ -501,7 +539,77 @@ public final class EGraphCorpusCaseWriter {
         return quoteIdentifier(column.getName()) + " " + type;
     }
 
-    private static List<String> readSchemaSql(SQLite3GlobalState state, String type) {
+    /**
+     * The names the base query mentions, plus whatever those depend on: an index or trigger on a kept table, a table a
+     * kept view reads. Matched on the text of the query and of each object's own SQL, which is coarse but errs towards
+     * keeping - a name that only looks like a table costs one extra table in the snapshot, while a missing one would
+     * make the case unreplayable.
+     */
+    private static Set<String> referencedObjects(SQLite3GlobalState state, String baseQuery) {
+        Set<String> kept = new HashSet<>();
+        if (baseQuery == null) {
+            return kept;
+        }
+        List<String[]> objects = new ArrayList<>();
+        try (SQLancerResultSet rs = new SQLQueryAdapter(
+                "SELECT name, COALESCE(tbl_name, name), COALESCE(sql, '') FROM sqlite_master "
+                        + "WHERE name NOT LIKE 'sqlite_%'").executeAndGet(state)) {
+            if (rs == null) {
+                return kept;
+            }
+            while (rs.next()) {
+                objects.add(new String[] { rs.getString(1), rs.getString(2), rs.getString(3) });
+            }
+        } catch (Exception ignored) {
+            return kept;
+        }
+        for (String[] object : objects) {
+            if (mentions(baseQuery, object[0])) {
+                kept.add(normalizeIdentifierKey(object[0]));
+                kept.add(normalizeIdentifierKey(object[1]));
+            }
+        }
+        // Four passes are enough for the shapes this writes: a query names a view, the view names a
+        // table, the table carries an index and a trigger, and the trigger names one more table.
+        for (int pass = 0; pass < 4; pass++) {
+            int before = kept.size();
+            for (String[] object : objects) {
+                boolean keepThis = kept.contains(normalizeIdentifierKey(object[0]))
+                        || kept.contains(normalizeIdentifierKey(object[1]));
+                if (!keepThis) {
+                    continue;
+                }
+                kept.add(normalizeIdentifierKey(object[0]));
+                kept.add(normalizeIdentifierKey(object[1]));
+                for (String[] other : objects) {
+                    if (mentions(object[2], other[0])) {
+                        kept.add(normalizeIdentifierKey(other[0]));
+                        kept.add(normalizeIdentifierKey(other[1]));
+                    }
+                }
+            }
+            if (kept.size() == before) {
+                break;
+            }
+        }
+        return kept;
+    }
+
+    private static boolean mentions(String sql, String name) {
+        if (sql == null || name == null || name.isBlank()) {
+            return false;
+        }
+        return java.util.regex.Pattern
+                .compile("(?<![A-Za-z0-9_])" + java.util.regex.Pattern.quote(name) + "(?![A-Za-z0-9_])",
+                        java.util.regex.Pattern.CASE_INSENSITIVE)
+                .matcher(sql).find();
+    }
+
+    private static boolean isKept(Set<String> referenced, String name) {
+        return referenced == null || referenced.contains(normalizeIdentifierKey(name));
+    }
+
+    private static List<String> readSchemaSql(SQLite3GlobalState state, String type, Set<String> referenced) {
         List<String> result = new ArrayList<>();
         String sql = "SELECT name, sql FROM sqlite_master WHERE sql IS NOT NULL AND type = '" + type
                 + "' AND name NOT LIKE 'sqlite_%' UNION ALL SELECT name, sql FROM sqlite_temp_master "
@@ -514,6 +622,9 @@ public final class EGraphCorpusCaseWriter {
             while (rs.next()) {
                 String name = rs.getString(1);
                 if ("table".equals(type) && isVirtualTableShadowObject(name, virtualTableNames)) {
+                    continue;
+                }
+                if (!isKept(referenced, name)) {
                     continue;
                 }
                 String schemaSql = rs.getString(2);
@@ -643,7 +754,7 @@ public final class EGraphCorpusCaseWriter {
         return trimmed;
     }
 
-    private static List<String> createInsertStatements(SQLite3GlobalState state) {
+    private static List<String> createInsertStatements(SQLite3GlobalState state, Set<String> referenced) {
         List<String> result = new ArrayList<>();
         Set<String> emittedTables = new HashSet<>();
         for (SQLite3Table table : state.getSchema().getDatabaseTables()) {
@@ -662,28 +773,49 @@ public final class EGraphCorpusCaseWriter {
                     .collect(java.util.stream.Collectors.joining(", "));
             String valueList = columns.stream().map(c -> "quote(" + quoteIdentifier(c.getName()) + ")")
                     .collect(java.util.stream.Collectors.joining(" || ', ' || "));
-            String sql = "SELECT " + valueList + " FROM " + quoteIdentifier(tableName) + " LIMIT " + MAX_ROWS_PER_TABLE;
+            String sql = "SELECT " + valueList + " FROM " + quoteIdentifier(tableName) + " LIMIT " + Math.min(MAX_ROWS_PER_TABLE, MAX_SNAPSHOT_ROWS_PER_TABLE);
             try (SQLancerResultSet rs = new SQLQueryAdapter(sql).executeAndGet(state)) {
                 if (rs == null) {
                     continue;
                 }
+                // One statement per table rather than per row. The reader counts statements, not
+                // rows, and a table at the row cap used to be 128 of the 80 it accepts: measured on
+                // a capture, the median snapshot was 1023 statements of which 1020 were these
+                // inserts. Several tuples in one VALUES list say exactly the same thing.
+                List<String> tuples = new ArrayList<>();
+                int tupleChars = 0;
                 while (rs.next()) {
-                    result.add("INSERT INTO " + quoteIdentifier(tableName) + "(" + columnList + ") VALUES ("
-                            + rs.getString(1) + ")");
+                    String tuple = "(" + rs.getString(1) + ")";
+                    // Kept under the reader's per-statement limit: a table whose rows do not fit in
+                    // one statement is split across a few rather than dropped.
+                    if (tupleChars + tuple.length() > MAX_INSERT_STATEMENT_CHARS && !tuples.isEmpty()) {
+                        result.add("INSERT INTO " + quoteIdentifier(tableName) + "(" + columnList + ") VALUES "
+                                + String.join(", ", tuples));
+                        tuples.clear();
+                        tupleChars = 0;
+                    }
+                    tuples.add(tuple);
+                    tupleChars += tuple.length() + 2;
+                }
+                if (!tuples.isEmpty()) {
+                    result.add("INSERT INTO " + quoteIdentifier(tableName) + "(" + columnList + ") VALUES "
+                            + String.join(", ", tuples));
                 }
             } catch (Exception ignored) {
             }
         }
-        result.addAll(createCatalogInsertStatements(state, emittedTables));
+        result.addAll(createCatalogInsertStatements(state, emittedTables, referenced));
         return result;
     }
 
-    private static List<String> createCatalogInsertStatements(SQLite3GlobalState state, Set<String> excludedTables) {
+    private static List<String> createCatalogInsertStatements(SQLite3GlobalState state, Set<String> excludedTables,
+            Set<String> referenced) {
         List<String> result = new ArrayList<>();
         List<String> virtualTableNames = readVirtualTableNames(state);
         for (String tableName : readSchemaObjectNames(state, "table")) {
             if (tableName == null || excludedTables.contains(normalizeIdentifierKey(tableName))
-                    || isVirtualTableShadowObject(tableName, virtualTableNames) || isReadOnlyVirtualTable(state, tableName)) {
+                    || isVirtualTableShadowObject(tableName, virtualTableNames)
+                    || isReadOnlyVirtualTable(state, tableName) || !isKept(referenced, tableName)) {
                 continue;
             }
             List<String> columns = readTableColumnNames(state, tableName);
@@ -694,14 +826,33 @@ public final class EGraphCorpusCaseWriter {
                     .collect(java.util.stream.Collectors.joining(", "));
             String valueList = columns.stream().map(c -> "quote(" + quoteIdentifier(c) + ")")
                     .collect(java.util.stream.Collectors.joining(" || ', ' || "));
-            String sql = "SELECT " + valueList + " FROM " + quoteIdentifier(tableName) + " LIMIT " + MAX_ROWS_PER_TABLE;
+            String sql = "SELECT " + valueList + " FROM " + quoteIdentifier(tableName) + " LIMIT " + Math.min(MAX_ROWS_PER_TABLE, MAX_SNAPSHOT_ROWS_PER_TABLE);
             try (SQLancerResultSet rs = new SQLQueryAdapter(sql).executeAndGet(state)) {
                 if (rs == null) {
                     continue;
                 }
+                // One statement per table rather than per row. The reader counts statements, not
+                // rows, and a table at the row cap used to be 128 of the 80 it accepts: measured on
+                // a capture, the median snapshot was 1023 statements of which 1020 were these
+                // inserts. Several tuples in one VALUES list say exactly the same thing.
+                List<String> tuples = new ArrayList<>();
+                int tupleChars = 0;
                 while (rs.next()) {
-                    result.add("INSERT INTO " + quoteIdentifier(tableName) + "(" + columnList + ") VALUES ("
-                            + rs.getString(1) + ")");
+                    String tuple = "(" + rs.getString(1) + ")";
+                    // Kept under the reader's per-statement limit: a table whose rows do not fit in
+                    // one statement is split across a few rather than dropped.
+                    if (tupleChars + tuple.length() > MAX_INSERT_STATEMENT_CHARS && !tuples.isEmpty()) {
+                        result.add("INSERT INTO " + quoteIdentifier(tableName) + "(" + columnList + ") VALUES "
+                                + String.join(", ", tuples));
+                        tuples.clear();
+                        tupleChars = 0;
+                    }
+                    tuples.add(tuple);
+                    tupleChars += tuple.length() + 2;
+                }
+                if (!tuples.isEmpty()) {
+                    result.add("INSERT INTO " + quoteIdentifier(tableName) + "(" + columnList + ") VALUES "
+                            + String.join(", ", tuples));
                 }
             } catch (Exception ignored) {
             }
