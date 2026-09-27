@@ -32,6 +32,7 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
         private final String rewriteQuery;
         private final Function<String, String> variantWrapper;
         private final String source;
+        private final boolean rowsTruncatedArbitrarily;
 
         public GeneratedQuery(String originalQuery) {
             this(originalQuery, originalQuery, Function.identity());
@@ -43,10 +44,27 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
 
         public GeneratedQuery(String originalQuery, String rewriteQuery, Function<String, String> variantWrapper,
                 String source) {
+            this(originalQuery, rewriteQuery, variantWrapper, source, false);
+        }
+
+        /**
+         * @param rowsTruncatedArbitrarily
+         *            whether the query keeps only some of its rows without saying which ones - a LIMIT with no total
+         *            order over it. Two spellings then legitimately return different rows, because the whole point of a
+         *            rewrite is to change the plan and the plan is what decides which rows the LIMIT keeps. Only the row
+         *            count is comparable for such a query.
+         */
+        public GeneratedQuery(String originalQuery, String rewriteQuery, Function<String, String> variantWrapper,
+                String source, boolean rowsTruncatedArbitrarily) {
             this.originalQuery = originalQuery;
             this.rewriteQuery = rewriteQuery;
             this.variantWrapper = variantWrapper;
             this.source = source;
+            this.rowsTruncatedArbitrarily = rowsTruncatedArbitrarily;
+        }
+
+        boolean rowsTruncatedArbitrarily() {
+            return rowsTruncatedArbitrarily;
         }
 
         String getOriginalQuery() {
@@ -253,7 +271,21 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                                 "EGRAPH single-side empty result mismatch! Original rows: %d, variant rows: %d.%nFirst query: \"%s\"%nSecond query: \"%s\"",
                                 originalResult.size(), variantResult.size(), originalQuery, variantQuery));
                     }
-                    assumeRowsAreEqual(originalResult, variantResult, originalQuery, variantQuery, state);
+                    if (generatedQuery.rowsTruncatedArbitrarily()) {
+                        // Which rows survive an unordered LIMIT is the plan's choice, so only how
+                        // many survive is comparable here. The count is still worth comparing: it is
+                        // min(limit, matching rows), and the matching rows are what the rewrite is
+                        // about.
+                        sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordCardinalityOnlyComparison();
+                        if (originalResult.size() != variantResult.size()) {
+                            logMismatch(originalResult, variantResult, originalQuery, variantQuery, state);
+                            throw new AssertionError(String.format(
+                                    "The size of the result sets mismatch (%d and %d)!%nFirst query: \"%s\"%nSecond query: \"%s\"",
+                                    originalResult.size(), variantResult.size(), originalQuery, variantQuery));
+                        }
+                    } else {
+                        assumeRowsAreEqual(originalResult, variantResult, originalQuery, variantQuery, state);
+                    }
                     passedCount++;
                     if (show) {
                         System.err.printf("  [V%d] %3d rows  %3d ms  MATCH%n",
@@ -264,33 +296,42 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                     // do these two queries agree on an engine carrying every fix since the release -
                     // where the signatures below only recognise the shape of a report someone
                     // already wrote down.
-                    if (sqlancer.sqlite3.oracle.EGraphTrunkReferee.isConfigured()) {
-                        sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict verdict = sqlancer.sqlite3.oracle.EGraphTrunkReferee
-                                .judge(currentDatabaseFile(state), originalQuery, variantQuery);
-                        if (verdict == sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict.FIXED_UPSTREAM
-                                || verdict == sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict.UNSTABLE_QUERY) {
-                            String reason = verdict.name().toLowerCase(java.util.Locale.ROOT);
-                            sqlancer.sqlite3.oracle.EGraphKnownBugs.record(reason, rewriteQuery, originalQuery,
-                                    variantQuery, originalResult.size(), variantResult.size());
-                            if (show) {
-                                System.err.printf("  [V%d] %3d rows  %3d ms  %s%n",
-                                        i + 1, variantResult.size(), varExecTime, reason);
-                            }
-                            continue;
+                    sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict verdict = sqlancer.sqlite3.oracle.EGraphTrunkReferee
+                            .isConfigured()
+                                    ? sqlancer.sqlite3.oracle.EGraphTrunkReferee.judge(currentDatabaseFile(state),
+                                            originalQuery, variantQuery)
+                                    : null;
+                    if (verdict == sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict.FIXED_UPSTREAM
+                            || verdict == sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict.UNSTABLE_QUERY) {
+                        String reason = verdict.name().toLowerCase(java.util.Locale.ROOT);
+                        sqlancer.sqlite3.oracle.EGraphKnownBugs.record(reason, rewriteQuery, originalQuery,
+                                variantQuery, originalResult.size(), variantResult.size());
+                        if (show) {
+                            System.err.printf("  [V%d] %3d rows  %3d ms  %s%n",
+                                    i + 1, variantResult.size(), varExecTime, reason);
                         }
+                        continue;
                     }
                     // A defect that is live in the shipped engine answers every check that reaches
                     // it, hundreds of times in a single run, and buries whatever else the run finds.
                     // Recognised ones are counted and logged rather than reported as a finding.
-                    String knownBug = sqlancer.sqlite3.oracle.EGraphKnownBugs.recognise(rewriteQuery);
-                    if (knownBug != null) {
-                        sqlancer.sqlite3.oracle.EGraphKnownBugs.record(knownBug, rewriteQuery, originalQuery,
-                                variantQuery, originalResult.size(), variantResult.size());
-                        if (show) {
-                            System.err.printf("  [V%d] %3d rows  %3d ms  KNOWN BUG (%s)%n",
-                                    i + 1, variantResult.size(), varExecTime, knownBug);
+                    //
+                    // Only when the referee had no answer. The signatures are regexes over the query
+                    // text, so they also match a query that merely looks like an old report - and
+                    // LIVE_UPSTREAM means the trunk build just disagreed on this very database, which
+                    // is the strongest evidence a finding can have. Letting a regex overrule that
+                    // turned confirmed live defects into a line in the known-bug log.
+                    if (verdict != sqlancer.sqlite3.oracle.EGraphTrunkReferee.Verdict.LIVE_UPSTREAM) {
+                        String knownBug = sqlancer.sqlite3.oracle.EGraphKnownBugs.recognise(rewriteQuery);
+                        if (knownBug != null) {
+                            sqlancer.sqlite3.oracle.EGraphKnownBugs.record(knownBug, rewriteQuery, originalQuery,
+                                    variantQuery, originalResult.size(), variantResult.size());
+                            if (show) {
+                                System.err.printf("  [V%d] %3d rows  %3d ms  KNOWN BUG (%s)%n",
+                                        i + 1, variantResult.size(), varExecTime, knownBug);
+                            }
+                            continue;
                         }
-                        continue;
                     }
                     if (show) {
                         System.err.printf("  [V%d] %3d rows  %3d ms  MISMATCH%n",
@@ -548,12 +589,63 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
         return false;
     }
 
+    /**
+     * Encodes one result value so two result sets can be compared as text.
+     *
+     * <p>
+     * The trailing ".0" used to be stripped here, which made the integer 1 and the float 1.0 the same value. Both sides
+     * of a check project the same expressions - only the rows selected differ - so a rewrite has no business changing a
+     * value's storage class, and when one does that is worth seeing rather than hiding. Such a difference is counted
+     * separately (see {@link #resultRowsMatch(List, List, String, String)}) so a run says how often it happens.
+     * </p>
+     */
     static String encodeResultValue(String value) {
         if (value == null) {
             return "N";
         }
-        String canonicalized = ComparatorHelper.canonicalizeResultValue(value.replaceAll("[\\.]0+$", ""));
+        String canonicalized = ComparatorHelper.canonicalizeResultValue(value);
         return "S" + canonicalized.length() + ":" + canonicalized;
+    }
+
+    /**
+     * The same encoded row with integer and float spellings of one number folded together, for deciding whether a
+     * mismatch is only about storage class.
+     */
+    static String foldNumericSpelling(String encodedRow) {
+        StringBuilder folded = new StringBuilder(encodedRow.length());
+        int at = 0;
+        while (at < encodedRow.length()) {
+            if (at > 0) {
+                if (encodedRow.charAt(at) != '|') {
+                    return encodedRow; // not an encoding this method understands; leave it alone
+                }
+                folded.append('|');
+                at++;
+            }
+            if (encodedRow.startsWith("N", at)) {
+                folded.append('N');
+                at++;
+                continue;
+            }
+            int colon = encodedRow.indexOf(':', at);
+            if (!encodedRow.startsWith("S", at) || colon < 0) {
+                return encodedRow;
+            }
+            int length;
+            try {
+                length = Integer.parseInt(encodedRow.substring(at + 1, colon));
+            } catch (NumberFormatException e) {
+                return encodedRow;
+            }
+            int end = colon + 1 + length;
+            if (end > encodedRow.length()) {
+                return encodedRow;
+            }
+            String value = encodedRow.substring(colon + 1, end).replaceAll("[\\.]0+$", "");
+            folded.append('S').append(value.length()).append(':').append(value);
+            at = end;
+        }
+        return folded.toString();
     }
 
     static void assumeRowsAreEqual(List<String> originalRows, List<String> variantRows,
@@ -581,18 +673,49 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
         return toMultiset(originalRows).equals(toMultiset(variantRows));
     }
 
+    /**
+     * Compares the rows as a multiset, whatever the query says about order.
+     *
+     * <p>
+     * This used to compare them in order whenever the text mentioned ORDER BY anywhere, which was wrong in both
+     * directions. An ORDER BY inside a wrapper subquery does not order the query around it, and an ORDER BY on a column
+     * with ties does not fix the order of the tied rows - so the comparison reported differences SQL never promised.
+     * Measured right after findings stopped being swallowed: of the first 8 that surfaced, 6 were this. In the other
+     * direction, two spellings could return the same rows in a different order and that went unrecorded.
+     * </p>
+     *
+     * <p>
+     * An order-only difference is now counted and sampled instead. That keeps it visible without spending a run's
+     * attention on a difference the standard permits; catching a genuine ordering defect needs an oracle that knows the
+     * sort key is a total order, which this one does not.
+     * </p>
+     */
     static boolean resultRowsMatch(List<String> originalRows, List<String> variantRows,
             String originalQueryString, String variantQueryString) {
-        if (requiresOrderSensitiveComparison(originalQueryString)
-                || requiresOrderSensitiveComparison(variantQueryString)) {
-            return originalRows.equals(variantRows);
+        boolean sameMultiset = resultRowsMatch(originalRows, variantRows);
+        if (sameMultiset) {
+            if (!originalRows.equals(variantRows)) {
+                sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordOrderOnlyDifference(originalQueryString,
+                        variantQueryString);
+            }
+            return true;
         }
-        return resultRowsMatch(originalRows, variantRows);
+        // Still reported as a mismatch - it is one - but counted apart, so a run can say whether
+        // storage class alone ever separates two spellings, which decides whether the old blanket
+        // ".0" stripping was hiding anything.
+        if (toMultiset(foldNumericSpelling(originalRows)).equals(toMultiset(foldNumericSpelling(variantRows)))) {
+            sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordNumericSpellingDifference(originalQueryString,
+                    variantQueryString);
+        }
+        return false;
     }
 
-    static boolean requiresOrderSensitiveComparison(String queryString) {
-        return queryString != null && java.util.regex.Pattern.compile("(?is).*\\bORDER\\s+BY\\b.*")
-                .matcher(queryString).matches();
+    private static List<String> foldNumericSpelling(List<String> rows) {
+        List<String> folded = new java.util.ArrayList<>(rows.size());
+        for (String row : rows) {
+            folded.add(foldNumericSpelling(row));
+        }
+        return folded;
     }
 
     static Map<String, Integer> toMultiset(List<String> rows) {

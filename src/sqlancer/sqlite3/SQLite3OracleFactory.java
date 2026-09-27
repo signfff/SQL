@@ -313,13 +313,7 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                     throw new IgnoreMeException();
                 }
                 // Return SELECT for oracle to execute + egraph to rewrite + compare
-                // An index seek and a full scan visit rows in different orders, so a LIMIT would
-                // make the two sides return different rows and an ORDER BY with ties would make the
-                // order-sensitive comparison fire - both are false positives, not defects. Measured:
-                // `c1 > 1 LIMIT 5` returns ids 26,9,49,32,15 and the scanning spelling returns
-                // 4,5,9,10,11. Without LIMIT the multiset comparison is safe.
-                EGraphBaseQuery baseQuery = buildEGraphBaseQuery(select, whereCondition, targetTables,
-                        indexedPredicate != null);
+                EGraphBaseQuery baseQuery = buildEGraphBaseQuery(select, whereCondition, targetTables);
                 String rewriteQuery = baseQuery.sql;
                 boolean baseHasRows = queryProducesRows(state, rewriteQuery);
                 EGraphSqlCoverage.recordBaseProbe(rewriteQuery, baseHasRows);
@@ -1449,15 +1443,46 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 : getNoSetupCorpusSourceName(selectedInput);
         return new EGraphMetamorphicOracle.GeneratedQuery(originalQuery, rewriteQuery,
                 variant -> wrapEGraphCoverageShape(variant, finalOriginalContext),
-                querySource);
+                querySource, truncatesRowsArbitrarily(originalQuery));
     }
 
+    /**
+     * Whether a query keeps only part of its rows without saying which ones.
+     *
+     * <p>
+     * Only for text this run did not build: the generated shapes put a total order over every LIMIT, but a corpus case
+     * carries whatever it was written with, and the corpus on disk was written before that was true. A LIMIT of -1 keeps
+     * everything, and a LIMIT of 1 closing a subquery right away is the {@code EXISTS (... LIMIT 1)} the wrappers emit,
+     * where which row is found does not reach the result. Anything else can truncate.
+     * </p>
+     */
+    private static boolean truncatesRowsArbitrarily(String sql) {
+        if (sql == null) {
+            return false;
+        }
+        java.util.regex.Matcher limits = TRUNCATING_LIMIT.matcher(sql);
+        while (limits.find()) {
+            long rows = Long.parseLong(limits.group(1));
+            if (rows < 0) {
+                continue;
+            }
+            if (rows <= 1 && limits.group(2) != null) {
+                continue;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    private static final java.util.regex.Pattern TRUNCATING_LIMIT = java.util.regex.Pattern
+            .compile("\\bLIMIT\\s+(-?\\d+)\\s*(\\))?", java.util.regex.Pattern.CASE_INSENSITIVE);
+
     private static EGraphBaseQuery buildEGraphBaseQuery(SQLite3Select select, SQLite3Expression whereCondition,
-            AbstractTables<SQLite3Table, SQLite3Column> targetTables, boolean rowOrderMustNotMatter) {
+            AbstractTables<SQLite3Table, SQLite3Column> targetTables) {
         List<SQLite3Column> columns = targetTables.getColumns().stream()
                 .filter(SQLite3OracleFactory::hasUsableIdentifier)
                 .collect(java.util.stream.Collectors.toList());
-        EGraphBaseQueryShape shape = chooseEGraphBaseQueryShape(columns, rowOrderMustNotMatter);
+        EGraphBaseQueryShape shape = chooseEGraphBaseQueryShape(columns);
         resetEGraphBaseQuery(select, whereCondition);
         switch (shape) {
             case COLUMN_PROJECTION:
@@ -1471,10 +1496,11 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 select.setOrderByClauses(orderByColumn(columns));
                 break;
             case LIMIT_10:
+                select.setOrderByClauses(orderByEveryColumn(columns, null));
                 select.setLimitClause(SQLite3Constant.createIntConstant(10));
                 break;
             case ORDER_BY_COLUMN_LIMIT_10:
-                select.setOrderByClauses(orderByColumn(columns));
+                select.setOrderByClauses(orderByEveryColumn(columns, Randomly.fromList(columns)));
                 select.setLimitClause(SQLite3Constant.createIntConstant(10));
                 break;
             case PLAIN:
@@ -1496,16 +1522,15 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         select.setOffsetClause(null);
     }
 
-    private static EGraphBaseQueryShape chooseEGraphBaseQueryShape(List<SQLite3Column> columns,
-            boolean rowOrderMustNotMatter) {
+    /**
+     * There used to be a second, narrower set of shapes for the case where an index could make the two sides visit rows
+     * in different orders. It is no longer needed from either end: the comparison is a multiset one whatever the query
+     * says, so an ORDER BY cannot turn it order-sensitive, and every LIMIT shape now carries a total order, so a plan
+     * change cannot alter which rows it keeps. Both guards moved to where the problem actually was.
+     */
+    private static EGraphBaseQueryShape chooseEGraphBaseQueryShape(List<SQLite3Column> columns) {
         if (!EGRAPH_BASE_SKELETONS || columns.isEmpty()) {
             return EGraphBaseQueryShape.PLAIN;
-        }
-        if (rowOrderMustNotMatter) {
-            // The three shapes whose result is a set: no LIMIT to pick different rows with, and no
-            // ORDER BY to switch the comparison to order-sensitive.
-            return Randomly.fromOptions(EGraphBaseQueryShape.PLAIN, EGraphBaseQueryShape.PLAIN,
-                    EGraphBaseQueryShape.COLUMN_PROJECTION, EGraphBaseQueryShape.DISTINCT_COLUMNS);
         }
         return Randomly.fromOptions(EGraphBaseQueryShape.PLAIN, EGraphBaseQueryShape.PLAIN,
                 EGraphBaseQueryShape.COLUMN_PROJECTION, EGraphBaseQueryShape.DISTINCT_COLUMNS,
@@ -1523,6 +1548,40 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         }
         return selected.stream().map(c -> new SQLite3ColumnName(c, null))
                 .collect(java.util.stream.Collectors.toList());
+    }
+
+    /**
+     * An ORDER BY over every projected column, so that a LIMIT has a defined answer.
+     *
+     * <p>
+     * A LIMIT without one returns whichever rows the plan happened to visit first, and the whole point of a rewrite is
+     * to change the plan - so the two sides returned different rows and the oracle called it a defect. Measured on a
+     * two-minute run right after findings stopped being swallowed: all 39 of them were this, every single one. Ordering
+     * on one column is not enough either, because ties are broken by the plan again.
+     * </p>
+     *
+     * <p>
+     * Ties can only remain between rows equal in every projected column, and those are the same row as far as the
+     * comparison is concerned, so this makes the result a defined multiset. {@code leadingColumn}, when given, is sorted
+     * on first: an index on it can then satisfy the sort, which is a plan worth reaching.
+     * </p>
+     */
+    private static List<SQLite3Expression> orderByEveryColumn(List<SQLite3Column> columns,
+            SQLite3Column leadingColumn) {
+        if (columns.isEmpty()) {
+            return List.of();
+        }
+        Ordering ordering = Randomly.fromOptions(Ordering.ASC, Ordering.DESC);
+        List<SQLite3Expression> terms = new ArrayList<>();
+        if (leadingColumn != null) {
+            terms.add(new SQLite3OrderingTerm(new SQLite3ColumnName(leadingColumn, null), ordering));
+        }
+        for (SQLite3Column column : columns) {
+            if (column != leadingColumn) {
+                terms.add(new SQLite3OrderingTerm(new SQLite3ColumnName(column, null), ordering));
+            }
+        }
+        return terms;
     }
 
     private static List<SQLite3Expression> orderByColumn(List<SQLite3Column> columns) {
@@ -1995,6 +2054,13 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
     private static EGraphCoverageContext createEGraphCoverageContext(SQLite3GlobalState state,
             AbstractTables<SQLite3Table, SQLite3Column> targetTables, EGraphCoverageShape requestedShape)
             throws Exception {
+        if (state != null) {
+            // This is the one place a check's context is built, so it is where the snapshot the
+            // referee replays belongs to a new check. Without this it only ever grew: the first
+            // couple of thousand statements of the thread's life, then nothing - every later check
+            // handed the referee a setup from some earlier database and it could not answer.
+            EGraphContextSnapshot.reset();
+        }
         EGraphCoverageShape shape = requestedShape;
         SQLite3Table table = targetTables.getTables().get(0);
         List<SQLite3Column> columns = targetTables.getColumns().stream()

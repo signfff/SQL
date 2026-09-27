@@ -63,7 +63,13 @@ public abstract class ProviderAdapter<G extends GlobalState<O, ? extends Abstrac
                     } catch (IgnoreMeException ignored) {
                     } catch (AssertionError e) {
                         Reproducer<G> reproducer = oracle.getLastReproducer();
-                        if (reproducer != null) {
+                        // Handing the reproducer back replaces the exception, and Main only looks at
+                        // it under --use-reducer or --serialize-reproduce-state. With neither - the
+                        // default, and what every capture here runs with - the finding was returned
+                        // to a caller that dropped it: no exception, no log, no counter, and the
+                        // iteration recorded as a success. Only pass it on when it will be used.
+                        if (reproducer != null && (globalState.getOptions().useReducer()
+                                || globalState.getOptions().serializeReproduceState())) {
                             return reproducer;
                         }
                         throw e;

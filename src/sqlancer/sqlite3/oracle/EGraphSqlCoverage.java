@@ -100,6 +100,29 @@ public class EGraphSqlCoverage {
     static final Map<String, AtomicInteger> variantOnlyErrors = new ConcurrentHashMap<>();
     static final AtomicInteger variantOnlyErrorTotal = new AtomicInteger(0);
 
+    /**
+     * Two spellings that returned the same rows in a different order. SQL only fixes an order where an ORDER BY says
+     * so, and not even then when the sort key has ties, so this is not a finding - but it is worth seeing, since a
+     * genuine ordering defect would look exactly like this and needs an oracle that knows the key is a total order.
+     */
+    static final AtomicInteger orderOnlyDifferences = new AtomicInteger(0);
+    private static final ConcurrentLinkedQueue<String> orderOnlySamples = new ConcurrentLinkedQueue<>();
+
+    /**
+     * Two spellings whose rows agree once the integer and float spellings of a number are folded together. This IS
+     * reported as a finding - both sides project the same expressions, so a rewrite should not move a value between
+     * storage classes - but it is counted apart, because the encoder used to fold the two silently and a run needs to
+     * say whether that was hiding anything.
+     */
+    static final AtomicInteger numericSpellingDifferences = new AtomicInteger(0);
+    private static final ConcurrentLinkedQueue<String> numericSpellingSamples = new ConcurrentLinkedQueue<>();
+
+    /**
+     * Comparisons weakened to the row count alone, because the query truncates its rows without saying which ones. A
+     * large share here means the oracle is mostly counting rows rather than checking them.
+     */
+    static final AtomicInteger cardinalityOnlyComparisons = new AtomicInteger(0);
+
     // Checks that ran with an empty original result on purpose (see EMPTY_BASE_CHECK_PERCENT).
     static final AtomicInteger emptyBaseChecks = new AtomicInteger(0);
 
@@ -227,6 +250,27 @@ public class EGraphSqlCoverage {
                 } catch (IOException ignored) {
                 }
             }
+        }
+    }
+
+    /** Two spellings that returned the same rows in a different order. Not a finding; see the field. */
+    public static void recordOrderOnlyDifference(String originalSql, String variantSql) {
+        orderOnlyDifferences.incrementAndGet();
+        if (orderOnlySamples.size() < MAX_EMPTY_QUERY_SAMPLES) {
+            orderOnlySamples.add(compactSql(originalSql) + "  ||  " + compactSql(variantSql));
+        }
+    }
+
+    /** A comparison that could only look at the row count. See the field. */
+    public static void recordCardinalityOnlyComparison() {
+        cardinalityOnlyComparisons.incrementAndGet();
+    }
+
+    /** Two spellings whose rows differ only in how a number is spelled. Reported as a finding, counted here. */
+    public static void recordNumericSpellingDifference(String originalSql, String variantSql) {
+        numericSpellingDifferences.incrementAndGet();
+        if (numericSpellingSamples.size() < MAX_EMPTY_QUERY_SAMPLES) {
+            numericSpellingSamples.add(compactSql(originalSql) + "  ||  " + compactSql(variantSql));
         }
     }
 
@@ -931,6 +975,29 @@ public class EGraphSqlCoverage {
                                 entry.getValue().get(), percentage(entry.getValue().get(), probeEmpty)));
             }
             w.println();
+            if (cardinalityOnlyComparisons.get() > 0) {
+                w.printf("  Comparisons limited to the row count (query truncates arbitrarily): %d%n",
+                        cardinalityOnlyComparisons.get());
+                w.println();
+            }
+
+            if (numericSpellingDifferences.get() > 0) {
+                w.printf("  Rows differing only in how a number is spelled: %d%n",
+                        numericSpellingDifferences.get());
+                for (String sample : numericSpellingSamples) {
+                    w.println("  # " + sample);
+                }
+                w.println();
+            }
+
+            if (orderOnlyDifferences.get() > 0) {
+                w.printf("  Same rows in a different order (not findings): %d%n", orderOnlyDifferences.get());
+                for (String sample : orderOnlySamples) {
+                    w.println("  # " + sample);
+                }
+                w.println();
+            }
+
             w.println("  Result-set emptiness");
             w.printf("  Original queries checked: %d | Empty: %d (%.1f%%) | Non-empty: %d (%.1f%%)%n",
                     originalChecks, originalEmpty, percentage(originalEmpty, originalChecks),

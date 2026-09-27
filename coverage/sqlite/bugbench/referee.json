@@ -81,9 +81,9 @@
   },
   {
    "id": "8ebae091a9",
-   "live_in_release": false,
+   "live_in_release": true,
    "release": "1",
-   "trunk": "1"
+   "trunk": " 1"
   },
   {
    "id": "d4dcff8410",

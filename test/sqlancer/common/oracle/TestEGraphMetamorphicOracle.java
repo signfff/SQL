@@ -24,16 +24,15 @@ public class TestEGraphMetamorphicOracle {
         List<String> first = List.of("S1:a", "S1:b");
         List<String> sameRowsDifferentOrder = List.of("S1:b", "S1:a");
 
-        assertFalse(EGraphMetamorphicOracle.resultRowsMatch(first, sameRowsDifferentOrder,
+        // The same rows in a different order are not a finding, ORDER BY or not: an ORDER BY inside a
+        // wrapper does not order the query around it, and one on a column with ties does not fix the
+        // order of the tied rows. Such a difference is counted elsewhere instead.
+        assertTrue(EGraphMetamorphicOracle.resultRowsMatch(first, sameRowsDifferentOrder,
                 "SELECT c0 FROM t0 ORDER BY c0", "SELECT c0 FROM t0 ORDER BY c0"));
         assertTrue(EGraphMetamorphicOracle.resultRowsMatch(first, sameRowsDifferentOrder,
                 "SELECT c0 FROM t0", "SELECT c0 FROM t0"));
-    }
-
-    @Test
-    public void testOrderByDetectionHandlesWhitespace() {
-        assertTrue(EGraphMetamorphicOracle.requiresOrderSensitiveComparison("SELECT * FROM t0 ORDER \n BY c0"));
-        assertFalse(EGraphMetamorphicOracle.requiresOrderSensitiveComparison("SELECT * FROM t0 WHERE c0 = 1"));
+        assertFalse(EGraphMetamorphicOracle.resultRowsMatch(first, List.of("S1:a", "S1:c"),
+                "SELECT c0 FROM t0 ORDER BY c0", "SELECT c0 FROM t0 ORDER BY c0"));
     }
 
     @Test

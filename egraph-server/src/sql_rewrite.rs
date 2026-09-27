@@ -1408,8 +1408,9 @@ enum SqlValue {
     Bool(bool),
     Int(i64),
     Text(String),
-    /// BLOB literal ?in SQLite, BLOBs sort after all numbers and text.
-    Blob,
+    /// BLOB literal - in SQLite, BLOBs sort after all numbers and text. The bytes are kept: two
+    /// different blobs are not the same value, and a contentless Blob made x'41' = x'42' true here.
+    Blob(Vec<u8>),
 }
 
 impl SqlValue {
@@ -1423,16 +1424,20 @@ impl SqlValue {
         // Normalise Bool ?Int for cross-type comparison (SQLite has no bool type)
         let (a, b) = (self.normalise(), other.normalise());
         match (a.as_ref(), b.as_ref()) {
-            // Blob > everything except another Blob
-            (SqlValue::Blob, SqlValue::Blob) => Some(Ordering::Equal),
-            (SqlValue::Blob, _) => Some(Ordering::Greater),
-            (_, SqlValue::Blob) => Some(Ordering::Less),
+            // Blob > everything except another Blob, and two blobs compare by their bytes
+            (SqlValue::Blob(x), SqlValue::Blob(y)) => x.partial_cmp(y),
+            (SqlValue::Blob(_), _) => Some(Ordering::Greater),
+            (_, SqlValue::Blob(_)) => Some(Ordering::Less),
             // Same-type
             (SqlValue::Int(x), SqlValue::Int(y)) => x.partial_cmp(y),
             (SqlValue::Text(x), SqlValue::Text(y)) => x.partial_cmp(y),
-            // Text ?Int: try numeric coercion
-            (SqlValue::Text(t), SqlValue::Int(i)) => text_int_cmp(t, *i).map(|o| o.reverse()),
-            (SqlValue::Int(i), SqlValue::Text(t)) => text_int_cmp(t, *i),
+            // Text against a number compares by storage class, not by value: SQLite 3.54 answers
+            // '5' > 9 with 1 and '5' = 5 with 0. Numeric coercion happens only when a column's
+            // affinity asks for it, and nothing here carries an affinity, so the no-affinity rule
+            // is the one to model. A rewrite whose equivalence needs the coercion will not look
+            // equivalent here and is rejected, which is the safe direction for a soundness check.
+            (SqlValue::Text(_), SqlValue::Int(_)) => Some(Ordering::Greater),
+            (SqlValue::Int(_), SqlValue::Text(_)) => Some(Ordering::Less),
             // Bool normalised to Int already ?should not reach here
             (SqlValue::Bool(_), _) | (_, SqlValue::Bool(_)) => unreachable!(),
             // NULL already handled at top of function; Blob* covered above; remaining combos are unreachable
@@ -1455,21 +1460,6 @@ impl SqlValue {
 }
 
 use std::borrow::Cow;
-
-/// Compare numeric Text with Int.  If Text represents an integer, compare
-/// numerically; otherwise Text > Int in SQLite.
-fn text_int_cmp(t: &str, i: i64) -> Option<std::cmp::Ordering> {
-    // Try exact integer parse first
-    if let Ok(n) = t.parse::<i64>() {
-        return n.partial_cmp(&i);
-    }
-    // Try float
-    if let Ok(f) = t.parse::<f64>() {
-        return f.partial_cmp(&(i as f64));
-    }
-    // Non-numeric text sorts after all numbers in SQLite
-    Some(std::cmp::Ordering::Greater)
-}
 
 /// Evaluate a RecExpr under a specific assignment of Symbol ids to SqlValues.
 fn eval(
@@ -1498,62 +1488,45 @@ fn eval(
         }
 
         //  Comparisons: NULL if either side is NULL
-        SqlLang::Eq([l, r]) => {
-            let lv = eval(expr, *l, symbols, assignment);
-            let rv = eval(expr, *r, symbols, assignment);
-            if lv.is_null() || rv.is_null() {
-                SqlValue::Null
-            } else {
-                SqlValue::Bool(lv == rv)
-            }
-        }
-        SqlLang::NotEq([l, r]) => {
-            let lv = eval(expr, *l, symbols, assignment);
-            let rv = eval(expr, *r, symbols, assignment);
-            if lv.is_null() || rv.is_null() {
-                SqlValue::Null
-            } else {
-                SqlValue::Bool(lv != rv)
-            }
-        }
-        SqlLang::Lt([l, r]) => {
-            let lv = eval(expr, *l, symbols, assignment);
-            let rv = eval(expr, *r, symbols, assignment);
-            SqlValue::Bool(lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Less))
-        }
-        SqlLang::Gt([l, r]) => {
-            let lv = eval(expr, *l, symbols, assignment);
-            let rv = eval(expr, *r, symbols, assignment);
-            SqlValue::Bool(lv.partial_cmp(&rv) == Some(std::cmp::Ordering::Greater))
-        }
-        SqlLang::LtEq([l, r]) => {
-            let lv = eval(expr, *l, symbols, assignment);
-            let rv = eval(expr, *r, symbols, assignment);
-            let c = lv.partial_cmp(&rv);
-            SqlValue::Bool(
-                c == Some(std::cmp::Ordering::Less) || c == Some(std::cmp::Ordering::Equal),
-            )
-        }
-        SqlLang::GtEq([l, r]) => {
-            let lv = eval(expr, *l, symbols, assignment);
-            let rv = eval(expr, *r, symbols, assignment);
-            let c = lv.partial_cmp(&rv);
-            SqlValue::Bool(
-                c == Some(std::cmp::Ordering::Greater) || c == Some(std::cmp::Ordering::Equal),
-            )
-        }
+        // Through partial_cmp rather than SqlValue equality, so that TRUE and 1 - the same value
+        // to SQLite, two variants to this enum - compare equal.
+        SqlLang::Eq([l, r]) => order_compare(expr, *l, *r, symbols, assignment, |o| {
+            o == std::cmp::Ordering::Equal
+        }),
+        SqlLang::NotEq([l, r]) => order_compare(expr, *l, *r, symbols, assignment, |o| {
+            o != std::cmp::Ordering::Equal
+        }),
+        // partial_cmp answers None only when an operand is NULL, and an order comparison with a
+        // NULL operand is NULL, not FALSE. Reading None as FALSE made `NULL < 5` false here while
+        // SQLite returns NULL, which is exactly the difference a rewrite under a NOT turns into a
+        // wrong answer - so the checker would have waved such a rule through.
+        SqlLang::Lt([l, r]) => order_compare(expr, *l, *r, symbols, assignment, |o| {
+            o == std::cmp::Ordering::Less
+        }),
+        SqlLang::Gt([l, r]) => order_compare(expr, *l, *r, symbols, assignment, |o| {
+            o == std::cmp::Ordering::Greater
+        }),
+        SqlLang::LtEq([l, r]) => order_compare(expr, *l, *r, symbols, assignment, |o| {
+            o != std::cmp::Ordering::Greater
+        }),
+        SqlLang::GtEq([l, r]) => order_compare(expr, *l, *r, symbols, assignment, |o| {
+            o != std::cmp::Ordering::Less
+        }),
 
         //  Arithmetic: NULL if any operand is NULL
         SqlLang::Add([l, r]) => arith2(expr, *l, *r, symbols, assignment, |a, b| a + b),
         SqlLang::Sub([l, r]) => arith2(expr, *l, *r, symbols, assignment, |a, b| a - b),
         SqlLang::Mul([l, r]) => arith2(expr, *l, *r, symbols, assignment, |a, b| a * b),
-        SqlLang::Div([l, r]) => arith2(expr, *l, *r, symbols, assignment, |a, b| {
-            if b == 0 {
-                std::i64::MAX
-            } else {
-                a / b
+        // Division by zero is NULL in SQLite, not a number. Returning i64::MAX made the two sides
+        // of a rewrite agree on a value that never occurs.
+        SqlLang::Div([l, r]) => {
+            let lv = eval(expr, *l, symbols, assignment);
+            let rv = eval(expr, *r, symbols, assignment);
+            match (sqlvalue_to_int(&lv), sqlvalue_to_int(&rv)) {
+                (Some(a), Some(b)) if b != 0 => SqlValue::Int(a.wrapping_div(b)),
+                _ => SqlValue::Null,
             }
-        }),
+        }
         SqlLang::Neg([c]) => {
             let cv = eval(expr, *c, symbols, assignment);
             match sqlvalue_to_int(&cv) {
@@ -1674,9 +1647,98 @@ fn truth_value(v: &SqlValue) -> SqlValue {
         SqlValue::Bool(b) => SqlValue::Bool(*b),
         SqlValue::Int(0) => SqlValue::Bool(false),
         SqlValue::Int(_) => SqlValue::Bool(true),
-        SqlValue::Text(s) if s == "0" || s.is_empty() => SqlValue::Bool(false),
-        SqlValue::Text(_) => SqlValue::Bool(true),
-        SqlValue::Blob => SqlValue::Bool(true),
+        // A condition of text or blob is true when its leading numeric prefix is non-zero, which is
+        // not the same as "not the string 0": measured against SQLite 3.54, 'abc' and x'41' are
+        // FALSE while '2abc' and x'31' are TRUE. Treating every non-empty string as TRUE made the
+        // checker believe conditions that SQLite never enters.
+        SqlValue::Text(s) => SqlValue::Bool(numeric_prefix(s) != 0.0),
+        SqlValue::Blob(b) => SqlValue::Bool(numeric_prefix(&blob_as_text(b)) != 0.0),
+    }
+}
+
+/// The leading number of a string, the way sqlite3AtoF reads one: optional whitespace, optional
+/// sign, digits with an optional fraction and exponent. Zero when there is no such prefix.
+fn numeric_prefix(s: &str) -> f64 {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() && b[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    let start = i;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    let mut digits = 0;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+        digits += 1;
+    }
+    if i < b.len() && b[i] == b'.' {
+        i += 1;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+            digits += 1;
+        }
+    }
+    if digits == 0 {
+        return 0.0;
+    }
+    let mut end = i;
+    if i < b.len() && (b[i] == b'e' || b[i] == b'E') {
+        let mut j = i + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        let mut exponent_digits = 0;
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
+            exponent_digits += 1;
+        }
+        if exponent_digits > 0 {
+            end = j;
+        }
+    }
+    s[start..end].parse::<f64>().unwrap_or(0.0)
+}
+
+/// A blob read as text, which is how SQLite converts one before taking a number out of it.
+fn blob_as_text(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// The bytes behind an x'..' literal. An odd or non-hex body is not a blob to SQLite, and giving
+/// back no bytes leaves it comparing as an empty blob rather than silently as some other one.
+fn decode_hex(hex: &str) -> Vec<u8> {
+    let digits: Vec<u8> = hex.bytes().filter(|b| b.is_ascii_hexdigit()).collect();
+    if digits.len() != hex.len() || digits.len() % 2 != 0 {
+        return Vec::new();
+    }
+    digits
+        .chunks(2)
+        .map(|pair| {
+            let value = std::str::from_utf8(pair).unwrap_or("0");
+            u8::from_str_radix(value, 16).unwrap_or(0)
+        })
+        .collect()
+}
+
+/// One order comparison, with NULL on either side giving NULL.
+fn order_compare<F>(
+    expr: &RecExpr<SqlLang>,
+    l: Id,
+    r: Id,
+    symbols: &SymbolTable,
+    assignment: &HashMap<u64, SqlValue>,
+    accept: F,
+) -> SqlValue
+where
+    F: FnOnce(std::cmp::Ordering) -> bool,
+{
+    let lv = eval(expr, l, symbols, assignment);
+    let rv = eval(expr, r, symbols, assignment);
+    match lv.partial_cmp(&rv) {
+        Some(ordering) => SqlValue::Bool(accept(ordering)),
+        None => SqlValue::Null,
     }
 }
 
@@ -1740,7 +1802,7 @@ fn sqlvalue_to_text(v: &SqlValue) -> String {
         SqlValue::Bool(false) => "0".to_string(),
         SqlValue::Text(t) => t.clone(),
         SqlValue::Null => String::new(),
-        SqlValue::Blob => String::new(),
+        SqlValue::Blob(b) => blob_as_text(b),
     }
 }
 
@@ -1750,8 +1812,12 @@ fn sqlvalue_to_int(v: &SqlValue) -> Option<i64> {
         SqlValue::Int(i) => Some(*i),
         SqlValue::Bool(true) => Some(1),
         SqlValue::Bool(false) => Some(0),
-        SqlValue::Text(t) => t.parse::<i64>().ok(),
-        SqlValue::Null | SqlValue::Blob => None,
+        // Not a strict parse: SQLite answers '3abc' + 1 with 4 and 'abc' + 1 with 1, taking the
+        // leading number and calling a missing one zero. Refusing the conversion turned those into
+        // NULL, so a rewrite over text operands was checked against arithmetic that never happens.
+        SqlValue::Text(t) => Some(numeric_prefix(t) as i64),
+        SqlValue::Blob(b) => Some(numeric_prefix(&blob_as_text(b)) as i64),
+        SqlValue::Null => None,
     }
 }
 
@@ -1782,7 +1848,7 @@ fn sqlparser_value_to_sqlvalue(v: &sqlparser::ast::Value) -> SqlValue {
         | sqlparser::ast::Value::DoubleQuotedString(s)
         | sqlparser::ast::Value::NationalStringLiteral(s) => SqlValue::Text(s.clone()),
         // Hex literals ?BLOBs in SQLite (sort after numbers and text)
-        sqlparser::ast::Value::HexStringLiteral(_) => SqlValue::Blob,
+        sqlparser::ast::Value::HexStringLiteral(h) => SqlValue::Blob(decode_hex(h)),
         sqlparser::ast::Value::Null => SqlValue::Null,
         sqlparser::ast::Value::Boolean(b) => SqlValue::Bool(*b),
         _ => SqlValue::Null,
@@ -2423,6 +2489,62 @@ mod tests {
         let sql = "SELECT * FROM t0 WHERE c0 IN (SELECT c1 FROM t1)";
         assert_eq!(identity_variants(&parse_predicate(sql), sql, 2).len(), 2);
         assert!(identity_variants(&parse_predicate(sql), sql, 0).is_empty());
+    }
+
+    /// Evaluates a WHERE text with no free symbols, the way the rule checker does.
+    fn eval_predicate(sql: &str) -> SqlValue {
+        let expr = parse_predicate(&format!("SELECT 1 WHERE {}", sql));
+        let mut rec = RecExpr::default();
+        let mut symbols = SymbolTable::new();
+        let mut counter = 0u64;
+        let mut dedup = HashMap::new();
+        let root = sql_expr_to_recexpr_impl(&expr, &mut rec, &mut symbols, &mut counter, &mut dedup, sql);
+        eval(&rec, root, &symbols, &HashMap::new())
+    }
+
+    #[test]
+    fn an_order_comparison_with_null_is_null_not_false() {
+        // Measured against SQLite 3.54: `NULL < 5 IS NULL` answers 1.
+        assert_eq!(eval_predicate("NULL < 5"), SqlValue::Null);
+        assert_eq!(eval_predicate("NULL >= 5"), SqlValue::Null);
+        assert_eq!(eval_predicate("5 > NULL"), SqlValue::Null);
+        assert_eq!(eval_predicate("NOT (NULL < 5)"), SqlValue::Null);
+    }
+
+    #[test]
+    fn dividing_by_zero_is_null() {
+        assert_eq!(eval_predicate("5 / 0"), SqlValue::Null);
+        assert_eq!(eval_predicate("5 % 0"), SqlValue::Null);
+        assert_eq!(eval_predicate("6 / 3"), SqlValue::Int(2));
+    }
+
+    #[test]
+    fn text_and_blob_conditions_follow_their_leading_number() {
+        // Measured: 'abc' and x'41' are FALSE, '2abc' and x'31' are TRUE, '0e5' is FALSE.
+        assert_eq!(truth_value(&SqlValue::Text("abc".into())), SqlValue::Bool(false));
+        assert_eq!(truth_value(&SqlValue::Text("2abc".into())), SqlValue::Bool(true));
+        assert_eq!(truth_value(&SqlValue::Text("0e5".into())), SqlValue::Bool(false));
+        assert_eq!(truth_value(&SqlValue::Text("  3".into())), SqlValue::Bool(true));
+        assert_eq!(truth_value(&SqlValue::Blob(vec![0x41])), SqlValue::Bool(false));
+        assert_eq!(truth_value(&SqlValue::Blob(vec![0x31])), SqlValue::Bool(true));
+        assert_eq!(truth_value(&SqlValue::Blob(vec![0x00])), SqlValue::Bool(false));
+    }
+
+    #[test]
+    fn two_different_blobs_are_not_the_same_value() {
+        assert_eq!(eval_predicate("x'41' = x'42'"), SqlValue::Bool(false));
+        assert_eq!(eval_predicate("x'41' < x'42'"), SqlValue::Bool(true));
+        assert_eq!(eval_predicate("x'41' = x'41'"), SqlValue::Bool(true));
+        // A blob outranks text, which outranks a number.
+        assert_eq!(eval_predicate("x'41' > 'zz'"), SqlValue::Bool(true));
+        assert_eq!(eval_predicate("'5' > 9"), SqlValue::Bool(true));
+        assert_eq!(eval_predicate("'5' = 5"), SqlValue::Bool(false));
+    }
+
+    #[test]
+    fn true_and_one_are_the_same_value() {
+        assert_eq!(eval_predicate("TRUE = 1"), SqlValue::Bool(true));
+        assert_eq!(eval_predicate("FALSE = 0"), SqlValue::Bool(true));
     }
 
     #[test]

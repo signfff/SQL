@@ -35,14 +35,12 @@ public class TestSQLite3EGraphInputCorpus {
         assertEquals("CREATE TABLE t0(c0 TEXT)", statements.get(0));
         assertEquals("INSERT INTO t0 VALUES('a;b')", statements.get(1));
 
-        List<String> queries = SQLite3EGraphInputCorpus.readQueryInputs(options);
-        assertEquals(1, queries.size());
-        assertTrue(queries.get(0).startsWith("SELECT * FROM t0"));
         assertFalse(SQLite3EGraphInputCorpus.isQueryInput(statements.get(0)));
 
         List<SQLite3EGraphInputCorpus.CorpusQueryInput> records = SQLite3EGraphInputCorpus
                 .readQueryInputRecords(options);
         assertEquals(1, records.size());
+        assertTrue(records.get(0).getQuery().startsWith("SELECT * FROM t0"));
         assertTrue(records.get(0).hasSetupStatements());
         assertEquals(List.of("CREATE TABLE t0(c0 TEXT)", "INSERT INTO t0 VALUES('a;b')"),
                 records.get(0).getSetupStatements());

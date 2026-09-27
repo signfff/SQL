@@ -19,7 +19,6 @@ public final class SQLite3EGraphInputCorpus {
 
     private static final Map<String, List<String>> STATEMENT_CACHE = new ConcurrentHashMap<>();
     private static final Map<String, List<String>> SETUP_STATEMENT_CACHE = new ConcurrentHashMap<>();
-    private static final Map<String, List<String>> QUERY_CACHE = new ConcurrentHashMap<>();
     private static final Map<String, List<CorpusQueryInput>> QUERY_INPUT_CACHE = new ConcurrentHashMap<>();
     private static final int MAX_QUERY_INPUTS = Integer.getInteger("sqlite3.egraph.input.maxQueries", 20000);
     private static final int MAX_SETUP_STATEMENTS = Integer.getInteger("sqlite3.egraph.input.maxSetupStatements", 0);
@@ -76,32 +75,6 @@ public final class SQLite3EGraphInputCorpus {
 
     public static List<String> readInitialSetupStatements(SQLite3Options options) {
         return readSetupStatements(options);
-    }
-
-    public static List<String> readQueryInputs(SQLite3Options options) {
-        if (!isConfigured(options)) {
-            return Collections.emptyList();
-        }
-        return QUERY_CACHE.computeIfAbsent(options.egraphInputFile, ignored -> {
-            List<String> result = new ArrayList<>();
-            for (String path : getInputFiles(options)) {
-                for (String statement : readStatements(path)) {
-                    String queryRejectReason = getEGraphQueryRejectReason(statement);
-                    if (queryRejectReason == null) {
-                        result.add(statement);
-                        if (result.size() >= MAX_QUERY_INPUTS) {
-                            break;
-                        }
-                    } else if (isQueryInput(statement)) {
-                        EGraphSqlCoverage.recordCorpusFilterSkip("query-" + queryRejectReason);
-                    }
-                }
-                if (result.size() >= MAX_QUERY_INPUTS) {
-                    break;
-                }
-            }
-            return Collections.unmodifiableList(result);
-        });
     }
 
     public static List<CorpusQueryInput> readQueryInputRecords(SQLite3Options options) {
@@ -355,18 +328,8 @@ public final class SQLite3EGraphInputCorpus {
             if (normalized.matches("^INSERT\\b.*\\bSELECT\\b.*")) {
                 return "insert-select";
             }
-            if (isPotentiallyExplosiveSelfInsert(normalized)) {
-                return "self-insert";
-            }
         }
         return null;
-    }
-
-    private static boolean isPotentiallyExplosiveSelfInsert(String normalizedStatement) {
-        java.util.regex.Matcher matcher = java.util.regex.Pattern
-                .compile("^INSERT\\s+(?:OR\\s+\\w+\\s+)?INTO\\s+([\"`\\[]?)([A-Z_][A-Z0-9_]*)[\"`\\]]?\\b.*\\bSELECT\\b.*\\bFROM\\s+([\"`\\[]?)([A-Z_][A-Z0-9_]*)[\"`\\]]?\\b.*")
-                .matcher(normalizedStatement);
-        return matcher.matches() && matcher.group(2).equals(matcher.group(4));
     }
 
     private static List<String> readStatements(String inputFile) {
