@@ -26,6 +26,8 @@ coverage/*
 !coverage/sqlite/
 coverage/sqlite/*
 !coverage/sqlite/*.ps1
+# 一次性的语料维护脚本也算工具脚本
+!coverage/sqlite/compact-high-coverage-corpus.py
 # 语料：官方派生链与 auto-research 过滤结果纳入版本控制（共约 30 MB）。
 # high-coverage-egraph-corpus.sql 不入库 —— 它是从长跑的 replay 累积出来的，
 # 单文件 1.8 GB 超过 GitHub 的 100 MB 硬限制，用 update-high-coverage-corpus.ps1 重建。
