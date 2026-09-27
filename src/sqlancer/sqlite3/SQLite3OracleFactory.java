@@ -321,10 +321,16 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                     // An empty original is only vacuous if the variants are empty too. If a variant
                     // returns rows, that is the cleanest signal this oracle has - no row-order and no
                     // value-formatting ambiguity, straight to hasSingleSideEmptyMismatch. Discarding
-                    // every empty base query is exactly what keeps that judgment unreachable: the
-                    // workload report has original-only/variant-only empty pinned at 0 across every
-                    // run so far. Sampled rather than always-on because ~78% of base queries probe
-                    // empty and most of those checks will compare two empty results and learn nothing.
+                    // every empty base query is exactly what keeps that judgment unreachable, so a
+                    // tenth of them are kept.
+                    //
+                    // A tenth, and not all of them: measured at 10 and at 100 over 150 s each, now
+                    // that a finding is visible at all. The two arms compared the same number of
+                    // variant pairs, 86509 and 86579, but at 100 the share of pairs with both sides
+                    // empty went from 2.6% to 16.3% - 14% of the comparison budget spent on pairs
+                    // that cannot say anything - and neither arm raised a single finding more than the
+                    // other. The tenth costs 2.6% and is the only way to reach an empty-original
+                    // case at all, since the wrapped path needs a base query that already has rows.
                     if (EMPTY_BASE_CHECK_PERCENT <= 0
                             || Randomly.getNotCachedInteger(0, 100) >= EMPTY_BASE_CHECK_PERCENT) {
                         throw new IgnoreMeException();
@@ -491,17 +497,22 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         JSONB_STRESS_CONTEXT,
         XFER_OPTIMIZATION_CONTEXT,
         MULTI_SELECT_ORDER_BY_CONTEXT,
-        // The three shapes below aggregate the inner result instead of appending a
-        // constant-true EXISTS filter, so the value they compute lands in the
-        // result set and a wrong value becomes a mismatch the oracle reports.
+        // AGGREGATE_ORDER_BY_CONTEXT and WINDOW_RANGE_FULLSCAN_CONTEXT aggregate the inner result
+        // instead of appending a constant-true EXISTS filter, so what they compute depends on the rows
+        // the base query selected - which is what the rewrite changes, and therefore something this
+        // oracle can see be wrong. A value built from fixed literals cannot be, whichever side
+        // computes it. ROW_VALUE_CONTEXT is in this group by subject, not by that property.
 
         ROW_VALUE_CONTEXT,
         AGGREGATE_ORDER_BY_CONTEXT,
         WINDOW_RANGE_FULLSCAN_CONTEXT,
-        // Function batteries. Every value lands in the result set, so a wrong
-        // result from any of these built-ins is a mismatch. All inputs are fixed
-        // literals: 'now', random() and last_insert_rowid() would differ between
-        // the original and the variant execution and fake a bug.
+        // Function batteries. These are for coverage alone, and it is worth being exact about why:
+        // every value they project is computed from fixed literals, so the original and the variant
+        // compute the same thing and a differential oracle cannot see it be wrong - SQLite would get
+        // it equally wrong on both sides and the two would still agree. What reaches a finding is a
+        // projected value that depends on the rows the rewrite selects, or on the plan. The fixed
+        // literals are also the point: 'now', random() and last_insert_rowid() would differ between
+        // the two executions and fake a bug.
         SCALAR_FUNCTION_BATTERY_CONTEXT,
         DATE_MODIFIER_BATTERY_CONTEXT,
         WINDOW_FUNCTION_BATTERY_CONTEXT,
@@ -1152,6 +1163,67 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             .parseBoolean(System.getProperty("sqlite3.egraph.autoResearchGuidedShapes", "true"));
     private static final String AUTO_RESEARCH_RESULTS = System.getProperty("sqlite3.egraph.autoResearchResults",
             "D:\\sqlancer\\coverage\\sqlite\\auto-research-from-long-20260818-130511\\auto-research-results.csv");
+    /**
+     * Every wrapper shape a check can put around its base query, in one place. There used to be two lists: this one and
+     * a corpus one that was the same minus four entries. A shape added to one was absent from the other, silently.
+     *
+     * <p>
+     * The four that differed are the ones whose SQL names the target table's own columns, which a corpus query's schema
+     * need not have - so they are named as such below and left out of the corpus pool rather than left out of a copy.
+     * </p>
+     *
+     * <p>
+     * A shape listed more than once is picked that much more often; PLAIN is listed three times, as it was before. The
+     * corpus pool kept PLAIN twice rather than three times, a difference of about one check in eighty that is not worth a
+     * second list.
+     * </p>
+     */
+    private static final List<EGraphCoverageShape> COVERAGE_SHAPE_POOL = List.of(
+            EGraphCoverageShape.PLAIN, EGraphCoverageShape.PLAIN, EGraphCoverageShape.PLAIN, EGraphCoverageShape.DISTINCT, EGraphCoverageShape.GROUP_BY,
+            EGraphCoverageShape.DERIVED_TABLE, EGraphCoverageShape.COMPOUND_UNION_ALL,
+            EGraphCoverageShape.CORRELATED_SUBQUERY, EGraphCoverageShape.MATERIALIZED_CTE,
+            EGraphCoverageShape.AUTOMATIC_INDEX, EGraphCoverageShape.CO_ROUTINE, EGraphCoverageShape.MULTI_INDEX_OR,
+            EGraphCoverageShape.NOT_MATERIALIZED_CTE, EGraphCoverageShape.LIMIT_OFFSET,
+            EGraphCoverageShape.WHERE_CASE_TRUE, EGraphCoverageShape.WHERE_FUNCTION_TRUE,
+            EGraphCoverageShape.WHERE_COLLATE_TRUE, EGraphCoverageShape.SCALAR_SUBQUERY,
+            EGraphCoverageShape.WINDOW_COUNT, EGraphCoverageShape.VALUES_CTE_JOIN, EGraphCoverageShape.RECURSIVE_CTE,
+            EGraphCoverageShape.FTS5_MATCH_CONTEXT, EGraphCoverageShape.FTS5_DEEP_CONTEXT,
+            EGraphCoverageShape.RTREE_CONTEXT, EGraphCoverageShape.RTREE_DEEP_CONTEXT,
+            EGraphCoverageShape.DBSTAT_CONTEXT, EGraphCoverageShape.VIEW_TRIGGER_FK_CONTEXT,
+            EGraphCoverageShape.ANALYZE_INDEX_CONTEXT, EGraphCoverageShape.JSON_CONTEXT,
+            EGraphCoverageShape.TX_WAL_VACUUM_CONTEXT, EGraphCoverageShape.AUTO_VACUUM_INTEGRITY_CONTEXT,
+            EGraphCoverageShape.ATTACH_VACUUM_WAL_CONTEXT, EGraphCoverageShape.ALTER_INDEX_ANALYZE_CONTEXT,
+            EGraphCoverageShape.SELECT_WHERE_STRESS_CONTEXT, EGraphCoverageShape.EXPR_STRESS_CONTEXT,
+            EGraphCoverageShape.WINDOW_STRESS_CONTEXT, EGraphCoverageShape.RESOLVE_STRESS_CONTEXT,
+            EGraphCoverageShape.SORTER_STRESS_CONTEXT, EGraphCoverageShape.JOIN_OPTIMIZER_CONTEXT,
+            EGraphCoverageShape.ALTER_FK_STRESS_CONTEXT, EGraphCoverageShape.INTEGRITY_CHECK_CONTEXT,
+            EGraphCoverageShape.SCALAR_AGGREGATE_CONTEXT, EGraphCoverageShape.VIRTUAL_TABLE_UPDATE_CONTEXT,
+            EGraphCoverageShape.FTS5_SECURE_DELETE_CONTEXT, EGraphCoverageShape.VIRTUAL_TABLE_SAVEPOINT_CONTEXT,
+            EGraphCoverageShape.JSONB_STRESS_CONTEXT, EGraphCoverageShape.XFER_OPTIMIZATION_CONTEXT,
+            EGraphCoverageShape.MULTI_SELECT_ORDER_BY_CONTEXT, EGraphCoverageShape.ROW_VALUE_CONTEXT,
+            EGraphCoverageShape.AGGREGATE_ORDER_BY_CONTEXT, EGraphCoverageShape.WINDOW_RANGE_FULLSCAN_CONTEXT,
+            EGraphCoverageShape.SCALAR_FUNCTION_BATTERY_CONTEXT, EGraphCoverageShape.DATE_MODIFIER_BATTERY_CONTEXT,
+            EGraphCoverageShape.WINDOW_FUNCTION_BATTERY_CONTEXT, EGraphCoverageShape.FTS4_MATCH_CONTEXT,
+            EGraphCoverageShape.FTS4_AUX_CONTEXT, EGraphCoverageShape.BLOOM_FILTER_CONTEXT,
+            EGraphCoverageShape.MULTI_INDEX_OR_ROWSET_CONTEXT, EGraphCoverageShape.INDEX_FUNCTION_VALUE_CONTEXT,
+            EGraphCoverageShape.SORTER_DEEP_MERGE_CONTEXT, EGraphCoverageShape.FTS5_DEEP_QUERY_CONTEXT,
+            EGraphCoverageShape.FTS5_AUX_DEEP_CONTEXT, EGraphCoverageShape.FTS4_DEEP_SEGMENT_CONTEXT,
+            EGraphCoverageShape.FTS5_VARIANT_CONFIG_CONTEXT, EGraphCoverageShape.PRAGMA_VTAB_CONTEXT,
+            EGraphCoverageShape.FTS4_MERGE_LCS_CONTEXT, EGraphCoverageShape.FTS3_TOKENIZE_TABLE_CONTEXT,
+            EGraphCoverageShape.FTS5_TOMBSTONE_CONTEXT, EGraphCoverageShape.FTS5_TOKENIZER_VARIANT_CONTEXT,
+            EGraphCoverageShape.SQL_SYNTAX_BATTERY_CONTEXT, EGraphCoverageShape.COLD_FUNCTION_BATTERY_CONTEXT,
+            EGraphCoverageShape.COLD_DDL_TRIGGER_CONTEXT);
+
+    /** Shapes whose SQL refers to the target table's columns, so they only fit a query this run built. */
+    private static final java.util.Set<EGraphCoverageShape> SHAPES_NEEDING_TARGET_COLUMNS = java.util.EnumSet.of(
+            EGraphCoverageShape.GROUP_BY, EGraphCoverageShape.CORRELATED_SUBQUERY,
+            EGraphCoverageShape.AUTOMATIC_INDEX, EGraphCoverageShape.MULTI_INDEX_OR);
+
+    private static final List<EGraphCoverageShape> CORPUS_COVERAGE_SHAPE_POOL = COVERAGE_SHAPE_POOL.stream()
+            .filter(shape -> !SHAPES_NEEDING_TARGET_COLUMNS.contains(shape))
+            .collect(java.util.stream.Collectors.toUnmodifiableList());
+
+
     private static final List<EGraphCoverageShape> AUTO_RESEARCH_SHAPES = loadAutoResearchShapes();
 
     private static EGraphCoverageShape chooseEGraphCoverageShape() {
@@ -1159,50 +1231,7 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         if (autoShape != null && Randomly.fromOptions(true, true, false)) {
             return autoShape;
         }
-        return Randomly.fromOptions(EGraphCoverageShape.PLAIN, EGraphCoverageShape.PLAIN, EGraphCoverageShape.PLAIN,
-                EGraphCoverageShape.DISTINCT, EGraphCoverageShape.GROUP_BY, EGraphCoverageShape.DERIVED_TABLE,
-                EGraphCoverageShape.COMPOUND_UNION_ALL, EGraphCoverageShape.CORRELATED_SUBQUERY,
-                EGraphCoverageShape.MATERIALIZED_CTE, EGraphCoverageShape.AUTOMATIC_INDEX,
-                EGraphCoverageShape.CO_ROUTINE, EGraphCoverageShape.MULTI_INDEX_OR,
-                EGraphCoverageShape.NOT_MATERIALIZED_CTE, EGraphCoverageShape.LIMIT_OFFSET,
-                EGraphCoverageShape.WHERE_CASE_TRUE, EGraphCoverageShape.WHERE_FUNCTION_TRUE,
-                EGraphCoverageShape.WHERE_COLLATE_TRUE, EGraphCoverageShape.SCALAR_SUBQUERY,
-                EGraphCoverageShape.WINDOW_COUNT, EGraphCoverageShape.VALUES_CTE_JOIN,
-                EGraphCoverageShape.RECURSIVE_CTE, EGraphCoverageShape.FTS5_MATCH_CONTEXT,
-                EGraphCoverageShape.FTS5_DEEP_CONTEXT,
-                EGraphCoverageShape.RTREE_CONTEXT, EGraphCoverageShape.RTREE_DEEP_CONTEXT,
-                EGraphCoverageShape.DBSTAT_CONTEXT,
-                EGraphCoverageShape.VIEW_TRIGGER_FK_CONTEXT, EGraphCoverageShape.ANALYZE_INDEX_CONTEXT,
-                EGraphCoverageShape.JSON_CONTEXT, EGraphCoverageShape.TX_WAL_VACUUM_CONTEXT,
-                EGraphCoverageShape.AUTO_VACUUM_INTEGRITY_CONTEXT,
-                EGraphCoverageShape.ATTACH_VACUUM_WAL_CONTEXT,
-                EGraphCoverageShape.ALTER_INDEX_ANALYZE_CONTEXT, EGraphCoverageShape.SELECT_WHERE_STRESS_CONTEXT,
-                EGraphCoverageShape.EXPR_STRESS_CONTEXT, EGraphCoverageShape.WINDOW_STRESS_CONTEXT,
-                EGraphCoverageShape.RESOLVE_STRESS_CONTEXT, EGraphCoverageShape.SORTER_STRESS_CONTEXT,
-                EGraphCoverageShape.JOIN_OPTIMIZER_CONTEXT, EGraphCoverageShape.ALTER_FK_STRESS_CONTEXT,
-                EGraphCoverageShape.INTEGRITY_CHECK_CONTEXT, EGraphCoverageShape.SCALAR_AGGREGATE_CONTEXT,
-                EGraphCoverageShape.VIRTUAL_TABLE_UPDATE_CONTEXT,
-                EGraphCoverageShape.FTS5_SECURE_DELETE_CONTEXT,
-                EGraphCoverageShape.VIRTUAL_TABLE_SAVEPOINT_CONTEXT, EGraphCoverageShape.JSONB_STRESS_CONTEXT,
-                EGraphCoverageShape.XFER_OPTIMIZATION_CONTEXT, EGraphCoverageShape.MULTI_SELECT_ORDER_BY_CONTEXT,
-                EGraphCoverageShape.ROW_VALUE_CONTEXT, EGraphCoverageShape.AGGREGATE_ORDER_BY_CONTEXT,
-                EGraphCoverageShape.WINDOW_RANGE_FULLSCAN_CONTEXT,
-                EGraphCoverageShape.SCALAR_FUNCTION_BATTERY_CONTEXT,
-                EGraphCoverageShape.DATE_MODIFIER_BATTERY_CONTEXT,
-                EGraphCoverageShape.WINDOW_FUNCTION_BATTERY_CONTEXT,
-                EGraphCoverageShape.FTS4_MATCH_CONTEXT, EGraphCoverageShape.FTS4_AUX_CONTEXT,
-                EGraphCoverageShape.BLOOM_FILTER_CONTEXT, EGraphCoverageShape.MULTI_INDEX_OR_ROWSET_CONTEXT,
-                EGraphCoverageShape.INDEX_FUNCTION_VALUE_CONTEXT,
-                EGraphCoverageShape.SORTER_DEEP_MERGE_CONTEXT,
-                EGraphCoverageShape.FTS5_DEEP_QUERY_CONTEXT, EGraphCoverageShape.FTS5_AUX_DEEP_CONTEXT,
-                EGraphCoverageShape.FTS4_DEEP_SEGMENT_CONTEXT,
-                EGraphCoverageShape.FTS5_VARIANT_CONFIG_CONTEXT, EGraphCoverageShape.PRAGMA_VTAB_CONTEXT,
-                EGraphCoverageShape.FTS4_MERGE_LCS_CONTEXT, EGraphCoverageShape.FTS3_TOKENIZE_TABLE_CONTEXT,
-                EGraphCoverageShape.FTS5_TOMBSTONE_CONTEXT,
-                EGraphCoverageShape.FTS5_TOKENIZER_VARIANT_CONTEXT,
-                EGraphCoverageShape.SQL_SYNTAX_BATTERY_CONTEXT,
-                EGraphCoverageShape.COLD_FUNCTION_BATTERY_CONTEXT,
-                EGraphCoverageShape.COLD_DDL_TRIGGER_CONTEXT);
+        return Randomly.fromList(COVERAGE_SHAPE_POOL);
     }
 
     private static EGraphCoverageShape chooseAutoResearchShape() {
@@ -2000,48 +2029,7 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
         if (autoShape != null && Randomly.fromOptions(true, true, false)) {
             return autoShape;
         }
-        return Randomly.fromOptions(EGraphCoverageShape.PLAIN, EGraphCoverageShape.PLAIN,
-                EGraphCoverageShape.DERIVED_TABLE, EGraphCoverageShape.DISTINCT,
-                EGraphCoverageShape.COMPOUND_UNION_ALL, EGraphCoverageShape.MATERIALIZED_CTE,
-                EGraphCoverageShape.NOT_MATERIALIZED_CTE, EGraphCoverageShape.CO_ROUTINE,
-                EGraphCoverageShape.LIMIT_OFFSET, EGraphCoverageShape.WHERE_CASE_TRUE,
-                EGraphCoverageShape.WHERE_FUNCTION_TRUE, EGraphCoverageShape.WHERE_COLLATE_TRUE,
-                EGraphCoverageShape.SCALAR_SUBQUERY, EGraphCoverageShape.WINDOW_COUNT,
-                EGraphCoverageShape.VALUES_CTE_JOIN, EGraphCoverageShape.RECURSIVE_CTE,
-                EGraphCoverageShape.FTS5_MATCH_CONTEXT, EGraphCoverageShape.FTS5_DEEP_CONTEXT,
-                EGraphCoverageShape.RTREE_CONTEXT, EGraphCoverageShape.RTREE_DEEP_CONTEXT,
-                EGraphCoverageShape.DBSTAT_CONTEXT, EGraphCoverageShape.VIEW_TRIGGER_FK_CONTEXT,
-                EGraphCoverageShape.ANALYZE_INDEX_CONTEXT, EGraphCoverageShape.JSON_CONTEXT,
-                EGraphCoverageShape.TX_WAL_VACUUM_CONTEXT, EGraphCoverageShape.AUTO_VACUUM_INTEGRITY_CONTEXT,
-                EGraphCoverageShape.ATTACH_VACUUM_WAL_CONTEXT,
-                EGraphCoverageShape.ALTER_INDEX_ANALYZE_CONTEXT,
-                EGraphCoverageShape.SELECT_WHERE_STRESS_CONTEXT, EGraphCoverageShape.EXPR_STRESS_CONTEXT,
-                EGraphCoverageShape.WINDOW_STRESS_CONTEXT, EGraphCoverageShape.RESOLVE_STRESS_CONTEXT,
-                EGraphCoverageShape.SORTER_STRESS_CONTEXT, EGraphCoverageShape.JOIN_OPTIMIZER_CONTEXT,
-                EGraphCoverageShape.ALTER_FK_STRESS_CONTEXT, EGraphCoverageShape.FTS5_SECURE_DELETE_CONTEXT,
-                EGraphCoverageShape.INTEGRITY_CHECK_CONTEXT, EGraphCoverageShape.SCALAR_AGGREGATE_CONTEXT,
-                EGraphCoverageShape.VIRTUAL_TABLE_UPDATE_CONTEXT,
-                EGraphCoverageShape.VIRTUAL_TABLE_SAVEPOINT_CONTEXT, EGraphCoverageShape.JSONB_STRESS_CONTEXT,
-                EGraphCoverageShape.XFER_OPTIMIZATION_CONTEXT,
-                EGraphCoverageShape.MULTI_SELECT_ORDER_BY_CONTEXT, EGraphCoverageShape.ROW_VALUE_CONTEXT,
-                EGraphCoverageShape.AGGREGATE_ORDER_BY_CONTEXT,
-                EGraphCoverageShape.WINDOW_RANGE_FULLSCAN_CONTEXT,
-                EGraphCoverageShape.SCALAR_FUNCTION_BATTERY_CONTEXT,
-                EGraphCoverageShape.DATE_MODIFIER_BATTERY_CONTEXT,
-                EGraphCoverageShape.WINDOW_FUNCTION_BATTERY_CONTEXT,
-                EGraphCoverageShape.FTS4_MATCH_CONTEXT, EGraphCoverageShape.FTS4_AUX_CONTEXT,
-                EGraphCoverageShape.BLOOM_FILTER_CONTEXT, EGraphCoverageShape.MULTI_INDEX_OR_ROWSET_CONTEXT,
-                EGraphCoverageShape.INDEX_FUNCTION_VALUE_CONTEXT,
-                EGraphCoverageShape.SORTER_DEEP_MERGE_CONTEXT,
-                EGraphCoverageShape.FTS5_DEEP_QUERY_CONTEXT, EGraphCoverageShape.FTS5_AUX_DEEP_CONTEXT,
-                EGraphCoverageShape.FTS4_DEEP_SEGMENT_CONTEXT,
-                EGraphCoverageShape.FTS5_VARIANT_CONFIG_CONTEXT, EGraphCoverageShape.PRAGMA_VTAB_CONTEXT,
-                EGraphCoverageShape.FTS4_MERGE_LCS_CONTEXT, EGraphCoverageShape.FTS3_TOKENIZE_TABLE_CONTEXT,
-                EGraphCoverageShape.FTS5_TOMBSTONE_CONTEXT,
-                EGraphCoverageShape.FTS5_TOKENIZER_VARIANT_CONTEXT,
-                EGraphCoverageShape.SQL_SYNTAX_BATTERY_CONTEXT,
-                EGraphCoverageShape.COLD_FUNCTION_BATTERY_CONTEXT,
-                EGraphCoverageShape.COLD_DDL_TRIGGER_CONTEXT);
+        return Randomly.fromList(CORPUS_COVERAGE_SHAPE_POOL);
     }
 
     private static EGraphCoverageShape chooseEGraphExecutionCoverageShape(EGraphCoverageShape inputShape) {
@@ -2607,8 +2595,9 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             case FTS4_MATCH_CONTEXT:
                 // FTS3/FTS4 query-expression variety: OR, phrase, NEAR, negation,
                 // column filter, prefix and parenthesised groups, across three
-                // tokenizers. The match counts are part of the result, so a wrong
-                // match set is a mismatch rather than an invisible difference.
+                // tokenizers. For coverage: the match counts are projected, but they are computed
+                // from the FTS table and not from the rows the rewrite selects, so both sides compute
+                // the same number and the comparison cannot tell a wrong one from a right one.
                 return "SELECT egraph_fts4_q.*, "
                         + "(SELECT count(*) FROM egraph_fts4 WHERE egraph_fts4 MATCH 'sqlite OR coverage') "
                         + "AS egraph_fts4_or, "
@@ -2675,9 +2664,10 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + ") AS egraph_deep_q JOIN egraph_sorter_probe AS p ON p.bucket >= 0 "
                         + "CROSS JOIN egraph_deep_amp ORDER BY p.payload, p.id";
             case ROW_VALUE_CONTEXT:
-                // Row-value comparisons in every supported position: =, IN
-                // (VALUES ...) and BETWEEN. The counts are part of the result,
-                // so a wrong row-value evaluation is reported.
+                // Row-value comparisons in every supported position: =, IN (VALUES ...), BETWEEN and
+                // IN over a subquery. For coverage: the four counts come from a fixed probe table and
+                // not from the rows the rewrite selects, so both sides compute the same four numbers
+                // and a wrong one is invisible here. The base rows beside them are what gets compared.
                 return "SELECT egraph_rv.*, (SELECT count(*) FROM egraph_rowvalue_probe AS p "
                         + "WHERE (p.a, p.b) IN (VALUES (1, 'x'), (2, 'y'), (3, NULL), (4, 'z'))) "
                         + "AS egraph_rv_in, (SELECT count(*) FROM egraph_rowvalue_probe AS p "
@@ -2736,8 +2726,9 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                         + "WHERE term >= 'a' LIMIT 1)";
             case JSONB_STRESS_CONTEXT:
                 // Escaped object labels take jsonLabelCompareEscaped, which the plain
-                // '$.a.b' paths never reach. Projected, so a wrong value is a mismatch
-                // rather than an invisible difference.
+                // '$.a.b' paths never reach. For coverage: the projected values come from literals,
+                // so the two sides compute the same ones and a wrong one stays invisible to this
+                // oracle.
                 return "SELECT egraph_jsonb_q.*, "
                         + "json_extract(json_object('a\"b', 7, 'c', 8), '$.\"a\\\"b\"') AS egraph_jsonb_esc, "
                         + "json_extract('{\"x\ty\":5,\"z\":6}', '$.\"x\ty\"') AS egraph_jsonb_esc2, "
