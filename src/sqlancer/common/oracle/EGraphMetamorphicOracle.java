@@ -335,7 +335,7 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                             .log(String.format("Original query: %s%nVariant query: %s", originalQuery, variantQuery));
                     if (!corpusCaseRecorded) {
                         sqlancer.sqlite3.oracle.EGraphCorpusCaseWriter.recordCase(state, rewriteQuery,
-                                originalResult.size(), replayQueries);
+                                originalResult.size(), replayQueries, !generatedQuery.rowsTruncatedArbitrarily());
                         corpusCaseRecorded = true;
                     }
                     throw e;
@@ -343,7 +343,7 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
             }
             if (!corpusCaseRecorded && testedCount > 0) {
                 sqlancer.sqlite3.oracle.EGraphCorpusCaseWriter.recordCase(state, rewriteQuery, originalResult.size(),
-                        replayQueries);
+                        replayQueries, !generatedQuery.rowsTruncatedArbitrarily());
                 corpusCaseRecorded = true;
             }
             if (recordExample && !exampleVariantQueries.isEmpty()) {

@@ -113,6 +113,10 @@ public final class SQLite3Errors {
 
         errors.add("unsupported frame specification");
         errors.add("non-deterministic functions prohibited in CHECK constraints");
+        // A CHECK constraint holds an expression, so an expression's own refusals reach a CREATE
+        // TABLE too. sqlite-jdbc disables load_extension, and a generated CHECK that calls it made
+        // the CREATE fail with an AssertionError that looks exactly like a finding in the log.
+        errors.add("unsafe use of load_extension");
         errors.addAll(Arrays.asList("subqueries prohibited in CHECK constraints",
                 "generated columns cannot be part of the PRIMARY KEY", "must have at least one non-generated column"));
 

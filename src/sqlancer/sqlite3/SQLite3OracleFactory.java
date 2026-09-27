@@ -1472,7 +1472,7 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 : getNoSetupCorpusSourceName(selectedInput);
         return new EGraphMetamorphicOracle.GeneratedQuery(originalQuery, rewriteQuery,
                 variant -> wrapEGraphCoverageShape(variant, finalOriginalContext),
-                querySource, truncatesRowsArbitrarily(originalQuery));
+                querySource, !selectedInput.rowsDetermined() && truncatesRowsArbitrarily(originalQuery));
     }
 
     /**

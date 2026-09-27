@@ -213,6 +213,7 @@ public final class SQLite3EGraphInputCorpus {
         // accumulated statements reproduces the database of any single case.
         String accumulatedSetup = "";
         boolean inCase = false;
+        boolean rowsDetermined = false;
         boolean inSetup = false;
         boolean inQuery = false;
         try (BufferedReader reader = Files.newBufferedReader(Path.of(inputFile), StandardCharsets.UTF_8)) {
@@ -223,6 +224,7 @@ public final class SQLite3EGraphInputCorpus {
                     inCase = true;
                     inSetup = false;
                     inQuery = false;
+                    rowsDetermined = trimmed.contains(" rows_determined=1");
                     setup.setLength(0);
                     query.setLength(0);
                     continue;
@@ -252,7 +254,7 @@ public final class SQLite3EGraphInputCorpus {
                     continue;
                 }
                 if (trimmed.equals(EGraphCorpusCaseWriter.CASE_END)) {
-                    addCaseInput(result, setup.toString(), query.toString(), inputFile);
+                    addCaseInput(result, setup.toString(), query.toString(), inputFile, rowsDetermined);
                     if (result.size() >= MAX_QUERY_INPUTS) {
                         break;
                     }
@@ -274,7 +276,7 @@ public final class SQLite3EGraphInputCorpus {
     }
 
     private static void addCaseInput(List<CorpusQueryInput> result, String setupText, String queryText,
-            String inputFile) {
+            String inputFile, boolean rowsDetermined) {
         List<String> setupStatements = readStatementsFromText(setupText);
         if (!isSafeCorpusSetupForReplay(setupStatements)) {
             EGraphSqlCoverage.recordCorpusFilterSkip("setup-" + getCorpusSetupRejectReason(setupStatements));
@@ -283,7 +285,7 @@ public final class SQLite3EGraphInputCorpus {
         for (String statement : readStatementsFromText(queryText)) {
             String queryRejectReason = getEGraphQueryRejectReason(statement);
             if (queryRejectReason == null) {
-                result.add(new CorpusQueryInput(setupStatements, statement, inputFile));
+                result.add(new CorpusQueryInput(setupStatements, statement, inputFile, rowsDetermined));
                 return;
             } else {
                 EGraphSqlCoverage.recordCorpusFilterSkip("query-" + queryRejectReason);
@@ -293,6 +295,30 @@ public final class SQLite3EGraphInputCorpus {
 
     private static boolean isSafeCorpusSetupForReplay(List<String> setupStatements) {
         return getCorpusSetupRejectReason(setupStatements) == null;
+    }
+
+    /**
+     * The longest single setup statement this reader accepts, so the writer can size what it emits from the limit that
+     * will be applied to it rather than from a copy of the number. The copy is how the corpus came to hold 9273 cases of
+     * which 874 could be loaded.
+     */
+    public static int maxCaseSetupStatementChars() {
+        return MAX_CASE_SETUP_STATEMENT_CHARS;
+    }
+
+    /** The most setup statements this reader will replay for one case. */
+    public static int maxCaseSetupStatements() {
+        return MAX_CASE_SETUP_STATEMENTS;
+    }
+
+    /** The most setup characters this reader will replay for one case. */
+    public static int maxCaseSetupChars() {
+        return MAX_CASE_SETUP_CHARS;
+    }
+
+    /** Why this reader would refuse a case with these setup statements, or null when it would take it. */
+    public static String corpusSetupRejectReason(List<String> setupStatements) {
+        return getCorpusSetupRejectReason(setupStatements);
     }
 
     private static String getCorpusSetupRejectReason(List<String> setupStatements) {
@@ -434,6 +460,7 @@ public final class SQLite3EGraphInputCorpus {
         private final int queryIndex;
         private final String query;
         private final String sourceName;
+        private final boolean rowsDetermined;
 
         private CorpusQueryInput(List<String> statements, int setupStartInclusive, int queryIndex, String query) {
             this.statements = statements;
@@ -442,15 +469,30 @@ public final class SQLite3EGraphInputCorpus {
             this.queryIndex = queryIndex;
             this.query = query;
             this.sourceName = "flat-corpus";
+            this.rowsDetermined = false;
         }
 
         private CorpusQueryInput(List<String> setupStatements, String query, String sourceName) {
+            this(setupStatements, query, sourceName, false);
+        }
+
+        private CorpusQueryInput(List<String> setupStatements, String query, String sourceName,
+                boolean rowsDetermined) {
             this.statements = null;
             this.setupStatements = List.copyOf(setupStatements);
             this.setupStartInclusive = 0;
             this.queryIndex = 0;
             this.query = query;
             this.sourceName = sourceName;
+            this.rowsDetermined = rowsDetermined;
+        }
+
+        /**
+         * Whether the case says which rows its query returns. False for a case written before this was recorded, which
+         * only means its rows have to be compared by count when the query truncates them.
+         */
+        public boolean rowsDetermined() {
+            return rowsDetermined;
         }
 
         public String getQuery() {

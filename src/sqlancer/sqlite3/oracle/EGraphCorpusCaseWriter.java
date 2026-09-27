@@ -49,9 +49,14 @@ public final class EGraphCorpusCaseWriter {
     // (database, schema_version, total_changes) triple as the previous case.
     private static final boolean SNAPSHOT_CACHE = !"false"
             .equalsIgnoreCase(System.getProperty("sqlite3.egraph.corpus.snapshotCache", "true"));
-    /** Room for one table's rows in a single INSERT, kept under the reader's per-statement limit of 2000. */
-    private static final int MAX_INSERT_STATEMENT_CHARS = Integer
-            .getInteger("sqlite3.egraph.corpus.maxInsertStatementChars", 1800);
+    /**
+     * Room for one table's rows in a single INSERT. Taken from the limit the reader will actually apply, less a tenth
+     * for the statement's own text, rather than from a number copied next to a comment saying what the reader's limit
+     * was at the time.
+     */
+    private static final int MAX_INSERT_STATEMENT_CHARS = Integer.getInteger(
+            "sqlite3.egraph.corpus.maxInsertStatementChars",
+            SQLite3EGraphInputCorpus.maxCaseSetupStatementChars() * 9 / 10);
     /**
      * Write only the objects the case's query needs, rather than the whole database. The reader accepts a case whose
      * setup is at most 80 statements; measured on the accumulated corpus, the median snapshot was 3205 and only 4.2%
@@ -64,6 +69,19 @@ public final class EGraphCorpusCaseWriter {
     private static List<String> cachedSnapshotSetup = List.of();
     private static SnapshotStructure lastWrittenSnapshot;
     private static int casesSinceKeyframe;
+    /**
+     * What the reader will have accumulated for the next case, as a statement count and a character count.
+     *
+     * <p>
+     * The reader reconstructs a delta case by appending the delta to the previous case's setup, and a delta rebuilds a
+     * table with its own DROP first - so the reconstruction is correct but grows with every delta, while the reader
+     * refuses a case whose setup is over 80 statements or 12000 characters. Measured on a corpus this writer had just
+     * produced: 142 of 2645 cases came back refused, all of them far from a keyframe. Tracking the same two numbers here
+     * and writing a full snapshot before they are crossed is what keeps every written case loadable.
+     * </p>
+     */
+    private static int reconstructedStatements;
+    private static int reconstructedChars;
     private static final AtomicInteger DELTA_CASE_COUNT = new AtomicInteger();
     private static final java.util.regex.Pattern CREATE_TABLE_NAME = java.util.regex.Pattern.compile(
             "^CREATE\\s+(?:TEMP\\s+|TEMPORARY\\s+)?(?:VIRTUAL\\s+)?TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?"
@@ -82,12 +100,14 @@ public final class EGraphCorpusCaseWriter {
     private EGraphCorpusCaseWriter() {
     }
 
-    public static void recordCase(SQLGlobalState<?, ?> state, String baseQuery, int rowCount) {
-        recordCase(state, baseQuery, rowCount, List.of());
-    }
-
+    /**
+     * @param rowsAreDetermined
+     *            whether the case's query says which rows it returns. A LIMIT with a total order over it does; a bare
+     *            LIMIT does not, and a replayed case with a bare LIMIT can only have its row count compared. The reader
+     *            cannot tell the two apart from the text, so the answer is written into the case.
+     */
     public static void recordCase(SQLGlobalState<?, ?> state, String baseQuery, int rowCount,
-            List<String> replayQueries) {
+            List<String> replayQueries, boolean rowsAreDetermined) {
         if (!(state instanceof SQLite3GlobalState) || baseQuery == null
                 || !SQLite3EGraphInputCorpus.isSafeEGraphQueryInput(baseQuery)) {
             return;
@@ -112,11 +132,22 @@ public final class EGraphCorpusCaseWriter {
             List<String> deltaStatements = null;
             if (snapshot != null && lastWrittenSnapshot != null && casesSinceKeyframe < KEYFRAME_INTERVAL) {
                 deltaStatements = snapshot.deltaFrom(lastWrittenSnapshot);
+                if (deltaStatements != null && !readerWouldStillLoad(deltaStatements)) {
+                    deltaStatements = null;
+                }
+            }
+            // A case the reader would refuse is worse than no case: it is read and discarded on every
+            // run for the rest of the corpus's life. The reader is asked directly, so the two cannot
+            // drift apart again.
+            String rejectReason = SQLite3EGraphInputCorpus.corpusSetupRejectReason(setupStatements);
+            if (rejectReason != null) {
+                EGraphSqlCoverage.recordCorpusFilterSkip("write-" + rejectReason);
+                return;
             }
             boolean writeDelta = deltaStatements != null;
             try (FileWriter writer = new FileWriter(replayFile, true)) {
                 writer.write(CASE_BEGIN + " rows=" + rowCount + " setup=" + (writeDelta ? "delta" : "full")
-                        + System.lineSeparator());
+                        + (rowsAreDetermined ? " rows_determined=1" : "") + System.lineSeparator());
                 if (writeDelta) {
                     // Only the tables that differ from the previous case are
                     // rebuilt; everything else is still standing in the replay
@@ -146,6 +177,13 @@ public final class EGraphCorpusCaseWriter {
                 writer.flush();
                 lastWrittenSnapshot = snapshot;
                 casesSinceKeyframe = writeDelta ? casesSinceKeyframe + 1 : 1;
+                if (writeDelta) {
+                    reconstructedStatements += deltaStatements.size();
+                    reconstructedChars += totalChars(deltaStatements);
+                } else {
+                    reconstructedStatements = setupStatements.size();
+                    reconstructedChars = totalChars(setupStatements);
+                }
             } catch (IOException ignored) {
             }
         }
@@ -262,6 +300,20 @@ public final class EGraphCorpusCaseWriter {
      * A parsed snapshot: the statements that rebuild each table, plus the index, view and trigger statements that sit
      * on top of them. Only used to compute deltas; a case that cannot be parsed simply falls back to a full snapshot.
      */
+    /** Whether the reader would still take a case reconstructed by appending this delta to what came before. */
+    private static boolean readerWouldStillLoad(List<String> deltaStatements) {
+        return reconstructedStatements + deltaStatements.size() <= SQLite3EGraphInputCorpus.maxCaseSetupStatements()
+                && reconstructedChars + totalChars(deltaStatements) <= SQLite3EGraphInputCorpus.maxCaseSetupChars();
+    }
+
+    private static int totalChars(List<String> statements) {
+        int total = 0;
+        for (String statement : statements) {
+            total += statement.length();
+        }
+        return total;
+    }
+
     private static final class SnapshotStructure {
 
         /** 一张表的重建语句，CREATE 与 INSERT 分开保存，好让 delta 把索引插在两者之间。 */
