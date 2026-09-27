@@ -1094,8 +1094,21 @@ fn make_base_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // expands (what makes distributivity explode).
         rewrite!("de-morgan-and-rev"; "(or (not ?x) (not ?y))" => "(not (and ?x ?y))"),
         rewrite!("de-morgan-or-rev"; "(and (not ?x) (not ?y))" => "(not (or ?x ?y))"),
-        //  Boolean algebra ?double negation
-        rewrite!("double-neg"; "(not (not ?x))" => "?x"),
+        //  Boolean algebra - double negation REMOVED
+        //
+        // not(not(?x)) is ?x as a truth value and is not ?x as a value: SQLite answers
+        // NOT (NOT 5) with 1. An e-class union is symmetric, so merging the two put a boolean test
+        // and a plain value in one class, and extraction could then substitute either way round -
+        // including in an arithmetic position, where (NOT (NOT 5)) + 1 is 2 and 5 + 1 is 6. The note
+        // below on isnull-expand already names this as the cause of Bug #12637 and closes one path
+        // into it; this rule is the mechanism itself, and it needs no help from isnull-expand. Asked
+        // directly with the predicate ((NOT (NOT c0)) + 1) > 0, the server returned a variant mixing
+        // both readings of the same operand, which disagrees with the original at c0 = -2.
+        //
+        // By this project's standing rule - a rewrite has to be strictly equivalent in every context,
+        // not only at the top of a WHERE clause - it cannot be kept. Measured cost of its absence,
+        // together with the six unsound arithmetic rules: none. See the arithmetic block below.
+        // rewrite!("double-neg"; "(not (not ?x))" => "?x"),
         //  Boolean algebra ?factoring (safe: always compresses)
         // Reverse of distributive expansion ?pulls out common factor.
         rewrite!("factor-and"; "(or (and ?x ?y) (and ?x ?z))" => "(and ?x (or ?y ?z))"),
@@ -1143,26 +1156,35 @@ fn make_base_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // Non-strict comparison split into its strict and equal halves, both directions.  The OR
         // form is what gives SQLite's OR-optimization something to chew on.
         //  Arithmetic
+        //
+        // Only the two commutativity rules are left, and they are the only two that survive being
+        // measured. The associativity and subtraction rules were justified on the grounds that both
+        // sides coerce every operand numerically, so the asymmetry that makes neg-neg unsafe never
+        // arises. That is true of coercion and beside the point: SQLite promotes an integer overflow
+        // to REAL, and where the overflow happens depends on the bracketing. Enumerated over the
+        // twelve edge values this validator already uses, on SQLite 3.54, counting pairs and triples
+        // whose two spellings do not give the same value and type:
+        //
+        //   add-assoc    140 of 1728 triples disagree   (MAX+1)+(-1) is 9.2e18, MAX+(1+(-1)) is MAX
+        //   mul-assoc    118 of 1728 triples disagree   (X*4)*0 is 0.0, X*(4*0) is 0
+        //   sub-to-add     5 of  144 pairs disagree
+        //   sub-antisym    3 of  144 pairs disagree
+        //   add-comm       0                            sound
+        //   mul-comm       0                            sound
+        //
+        // The in-memory validator could not catch any of it: it models integers as wrapping i64, so
+        // it computes both sides as equal where SQLite produces a REAL on one side only.
+        //
+        // Nothing is lost by their absence, which is the other half of the measurement: 150 s with
+        // the eight rules off against 150 s with them on gave a variant rate of 91.8% against 92.6%
+        // and 52219 compared pairs against 45662. Arithmetic is not an indexable position, so
+        // rebracketing it was never going to change an access path either.
         rewrite!("add-comm"; "(+ ?x ?y)" => "(+ ?y ?x)"),
         rewrite!("mul-comm"; "(* ?x ?y)" => "(* ?y ?x)"),
-        rewrite!("add-assoc-l"; "(+ (+ ?x ?y) ?z)" => "(+ ?x (+ ?y ?z))"),
-        rewrite!("add-assoc-r"; "(+ ?x (+ ?y ?z))" => "(+ (+ ?x ?y) ?z)"),
-        // Multiplication associativity, structurally the same as add-assoc above:
-        // both sides coerce every operand numerically, so the asymmetry that makes
-        // neg-neg and bitand-idem unsafe (one side coerces, the other does not)
-        // never arises.  Only mul-comm existed before.
-        rewrite!("mul-assoc-l"; "(* (* ?x ?y) ?z)" => "(* ?x (* ?y ?z))"),
-        rewrite!("mul-assoc-r"; "(* ?x (* ?y ?z))" => "(* (* ?x ?y) ?z)"),
         //  Arithmetic double-negation DISABLED ?negation forces numeric coercion
         // neg-neg: --x ?x is UNSAFE in SQLite ?- forces numeric coercion.
         // When x is TEXT, -(-('abc')) = 0 but bare 'abc' ?0.
         // rewrite!("neg-neg"; "(neg (neg ?x))" => "?x"),
-        rewrite!("sub-to-add"; "(- ?x ?y)" => "(+ ?x (neg ?y))"),
-        rewrite!("add-neg-to-sub"; "(+ ?x (neg ?y))" => "(- ?x ?y)"),
-        // x - y  ==  -(y - x).  Unlike neg-neg the negation is not cancelled here:
-        // both sides still apply subtraction to both operands, so the numeric
-        // coercion is identical and a TEXT operand behaves the same either way.
-        rewrite!("sub-antisym"; "(- ?x ?y)" => "(neg (- ?y ?x))"),
         //  IS FALSE / IS TRUE / IS UNKNOWN ?canonical form
         // IS FALSE / IS TRUE ?kept as transparent non-Symbol nodes.  The
         // obvious rewrites (IsFalseot, IsTrued) are correct as standalone
@@ -1171,16 +1193,16 @@ fn make_base_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // Even 500-sample validation + forced edge values cannot guarantee
         // catching all mismatches in a graph-based e-graph.
         //
-        // IS UNKNOWN / IS NOT UNKNOWN ?fully equivalent in all SQL contexts,
-        // safe to rewrite.
-        // The reverse direction is DISABLED: SQLite does not implement IS UNKNOWN / IS NOT UNKNOWN.
-        // It parses UNKNOWN as an identifier, so every such variant dies with
-        // "no such column: UNKNOWN". The earlier claim that the two spellings are "equivalent in
-        // every SQL context" holds for standard SQL, not for the DBMS actually under test. Measured
-        // cost before removal: 3101 of 3133 variant-only errors in a 300s run, and because a variant
-        // error aborts the whole check, ~16% of all checks (3133 / 19615) were silently discarded.
-        // rewrite!("isnull-to-isunknown"; "(isnull ?x)" => "(isunknown ?x)"),
-        // rewrite!("isnotnull-to-isnotunknown"; "(isnotnull ?x)" => "(isnotunknown ?x)"),
+        // IS UNKNOWN / IS NOT UNKNOWN are gone from the language entirely, nodes and rules, because
+        // SQLite has no such operator: it parses UNKNOWN as an identifier and every such variant died
+        // with "no such column: UNKNOWN". Measured before the rules went: 3101 of 3133 variant-only
+        // errors in a 300 s run, and since a variant error abandons the whole check, ~16% of all
+        // checks (3133 / 19615) were discarded for it.
+        //
+        // Worth keeping the general lesson: commenting out one direction of a rule pair does not make
+        // the reverse substitution impossible, because applying a rule *unions* the two e-classes and
+        // a union is symmetric - the extractor can then emit either node. It only narrows the trigger.
+        // A spelling the DBMS under test cannot parse has to leave the language, not just lose a rule.
         //  IS NULL / IS NOT NULL expansion ?DISABLED
         // These rules let egg's compositional extraction merge ISNULL/NOTNULL
         // e-classes with unrelated expressions (e.g. string literals), producing
@@ -1196,10 +1218,11 @@ fn make_base_rewrite_rules() -> Vec<Rewrite<SqlLang, ()>> {
         // These do what isnull-expand above was meant to do, without its failure mode. The
         // difference is the shape of the right-hand side: it is built only from isXXX nodes joined
         // by and/or, so the operand ?x never appears as a bare value. isnull-expand put (isnull ?x)
-        // into the not(...) family, and double-neg merges not(not(?y)) with ?y, so a boolean test
+        // into the not(...) family, and double-neg merged not(not(?y)) with ?y, so a boolean test
         // and a plain value ended up in one e-class - which is how "t0.c0 NOTNULL" came out as
         // "NOT(NOT(t0.c0))" (Bug #12637, wrong when c0=0). There is no path from these rules to a
-        // bare operand, so that merge cannot happen.
+        // bare operand, so that merge cannot happen. double-neg has since been removed as well, so
+        // the merge has no source at all.
         //
         // Meaning: a value that is neither TRUE nor FALSE can only be NULL, and vice versa.
         // Verified over the adversarial value grid - 19 literals (NULL / 0 / 1 / -1 / 0.0 /
@@ -1915,22 +1938,64 @@ fn classify_symbol(expr: &SqlExpr) -> Option<Vec<SqlValue>> {
         // Boolean-valued opaque expressions (IN, EXISTS, subqueries, LIKE-alikes)
         // ?should only receive Bool/Null values.
         // In strict EGRAPH mode these rarely appear, but handle defensively.
+        // LIKE, ILIKE, SIMILAR TO and IS [NOT] DISTINCT FROM are their own variants in sqlparser
+        // rather than binary operators, so they used to fall through to the value arm below and an
+        // opaque LIKE was handed integer assignments.
         SqlExpr::InList { .. }
         | SqlExpr::InSubquery { .. }
+        | SqlExpr::InUnnest { .. }
         | SqlExpr::Exists { .. }
-        | SqlExpr::Subquery(_) => Some(vec![
+        | SqlExpr::Subquery(_)
+        | SqlExpr::Like { .. }
+        | SqlExpr::ILike { .. }
+        | SqlExpr::SimilarTo { .. }
+        | SqlExpr::AnyOp { .. }
+        | SqlExpr::IsDistinctFrom(..)
+        | SqlExpr::IsNotDistinctFrom(..) => Some(vec![
             SqlValue::Bool(false),
             SqlValue::Bool(true),
             SqlValue::Null,
         ]),
 
-        // Opaque BinaryOp ?could be boolean (LIKE) or value (||, &, <<).
-        // Conservative: treat as value (None), random_assignment handles it.
-        SqlExpr::BinaryOp { .. } => None,
+        // An opaque BinaryOp is boolean for some operators and a value for others, and the operator
+        // says which. Treating them all as values gave an opaque LIKE integer assignments, so the
+        // checker reasoned about `c0 LIKE 'a%'` as if it could be 42 - and a rule whose soundness
+        // turns on the operand being 0, 1 or NULL was then checked against values it can never take.
+        SqlExpr::BinaryOp { op, .. } => {
+            if is_boolean_valued_operator(op) {
+                Some(vec![
+                    SqlValue::Bool(false),
+                    SqlValue::Bool(true),
+                    SqlValue::Null,
+                ])
+            } else {
+                None
+            }
+        }
 
         // Other opaque expressions ?treat as value
         _ => None,
     }
+}
+
+/// Whether a binary operator yields a truth value rather than a value.
+fn is_boolean_valued_operator(op: &BinaryOperator) -> bool {
+    matches!(
+        op,
+        BinaryOperator::Eq
+            | BinaryOperator::NotEq
+            | BinaryOperator::Lt
+            | BinaryOperator::Gt
+            | BinaryOperator::LtEq
+            | BinaryOperator::GtEq
+            | BinaryOperator::And
+            | BinaryOperator::Or
+            | BinaryOperator::Xor
+            | BinaryOperator::PGRegexMatch
+            | BinaryOperator::PGRegexIMatch
+            | BinaryOperator::PGRegexNotMatch
+            | BinaryOperator::PGRegexNotIMatch
+    )
 }
 
 /// Build a random assignment for every Symbol that appears in either tree.
@@ -2085,18 +2150,64 @@ const FORCED_VALUES: &[&str] = &[
     // signed zero and the REAL/INTEGER divide
     "0.0",
     "-0.0",
-    // affinity edges: TEXT that looks numeric, TEXT that does not, and BLOBs
+    // affinity edges: TEXT that looks numeric, TEXT that does not, and BLOBs. The numeric-looking
+    // spellings are the ones a declared affinity converts, and they are also what separates a
+    // comparison by storage class from one by value: SQLite answers '5' > 9 with 1 on a column with
+    // no affinity and with 0 on one declared INTEGER.
     "''",
     "'0'",
+    "'5'",
+    "' 1'",
+    "'-0'",
+    "'0.0'",
+    "'1e3'",
+    "'3abc'",
     "'abc'",
     "x''",
     "x'00'",
+    "x'31'",
 ];
+
+/// A declared type for a validation column, which is what gives it an affinity.
+///
+/// Switchable with EGRAPH_COLUMN_AFFINITIES=0 so the cost can be measured against the previous
+/// behaviour in one binary, the way the rule set already is.
+fn random_column_affinity<R: rand::Rng>(rng: &mut R) -> &'static str {
+    if !column_affinities_enabled() {
+        return "";
+    }
+    const AFFINITIES: &[&str] = &["", " INTEGER", " TEXT", " REAL", " NUMERIC", " BLOB"];
+    AFFINITIES[rng.gen_range(0..AFFINITIES.len())]
+}
+
+fn column_affinities_enabled() -> bool {
+    std::env::var("EGRAPH_COLUMN_AFFINITIES")
+        .map(|v| v != "0")
+        .unwrap_or(true)
+}
 
 /// Boundary values drawn independently per column, so a mismatch that needs *different* extreme
 /// values in different columns is reachable. FORCED_VALUES fills every column of a row with the
 /// same value, which cannot express that.
 const BOUNDARY_COMBINATION_ROWS: usize = 24;
+
+/// The values whose *pairing* decides a rewrite, for the two-column cross product below. A subset of
+/// FORCED_VALUES: the int64 and 2^53 bounds where arithmetic changes type, signed zero, and one
+/// numeric-looking and one non-numeric TEXT for affinity.
+const EXTREME_VALUES: &[&str] = &[
+    "NULL",
+    "0",
+    "1",
+    "-1",
+    "-9223372036854775808",
+    "9223372036854775807",
+    "4611686018427387904",
+    "9007199254740993",
+    "-0.0",
+    "'5'",
+    "'abc'",
+    "x'00'",
+];
 
 /// Walk a SqlExpr tree recursively and collect every column identifier
 /// (both qualified, e.g. `t0.c0`, and unqualified, e.g. `c0`).
@@ -2220,9 +2331,17 @@ fn validate_with_sqlite(
     };
 
     // 5. Create test table with the collected columns
+    //
+    // Each column gets a declared affinity, drawn at random for this request. Without one every
+    // column had BLOB affinity, so the validator never saw a comparison where SQLite converts an
+    // operand before comparing it - which is most of what makes its comparison rules interesting,
+    // and the reason a rule can be equivalent for two integers and not for an integer and a column
+    // declared TEXT. One draw per request rather than one fixed choice: a long run then checks every
+    // rule under many combinations instead of the same one every time.
+    let mut affinity_rng = rand::thread_rng();
     let col_defs = cols_sorted
         .iter()
-        .map(|c| format!("\"{}\"", c))
+        .map(|c| format!("\"{}\"{}", c, random_column_affinity(&mut affinity_rng)))
         .collect::<Vec<_>>()
         .join(", ");
     if conn
@@ -2262,6 +2381,24 @@ fn validate_with_sqlite(
     // TEXT in another.
     if cols_sorted.len() > 1 {
         use rand::Rng as _;
+        // Every pairing of the extremes across the first two columns, rather than drawn at random.
+        // A counterexample that needs one specific pair - (MAX, 1) for the associativity of addition,
+        // say - had about a one in eight chance of appearing in the random rows below, so the escape
+        // those rows were added to close was still mostly an escape. 144 rows make it certain.
+        for &first in EXTREME_VALUES {
+            for &second in EXTREME_VALUES {
+                let vals: Vec<String> = cols_sorted
+                    .iter()
+                    .enumerate()
+                    .map(|(index, _)| match index {
+                        0 => first.to_string(),
+                        1 => second.to_string(),
+                        _ => FORCED_VALUES[rng.gen_range(0..FORCED_VALUES.len())].to_string(),
+                    })
+                    .collect();
+                insert_values.push(format!("({})", vals.join(", ")));
+            }
+        }
         for _ in 0..BOUNDARY_COMBINATION_ROWS {
             let vals: Vec<String> = cols_sorted
                 .iter()
@@ -2652,6 +2789,48 @@ mod tests {
             "the COLLATE lost its brackets: {}",
             rendered
         );
+    }
+
+    #[test]
+    fn no_rule_merges_a_boolean_test_with_a_plain_value() {
+        // not(not(x)) is x as a truth value and 1 as a value, so merging them let extraction put a
+        // boolean test where an arithmetic operand belonged: (NOT (NOT c0)) + 1 against c0 + 1.
+        let sql = "SELECT * FROM t0 WHERE ((NOT (NOT t0.c0)) + 1) > 0";
+        let variants = generate_equivalent_where_clauses(&parse_predicate(sql), sql, 16, 20)
+            .expect("generates");
+        for variant in &variants {
+            let rendered = variant.to_string();
+            assert!(
+                !rendered.contains("t0.c0 + 1") && !rendered.contains("1 + t0.c0"),
+                "a variant dropped the double negation from a value position: {}",
+                rendered
+            );
+        }
+    }
+
+    #[test]
+    fn arithmetic_is_only_rewritten_where_sqlite_agrees() {
+        // Rebracketing moves where an integer overflow happens, and SQLite promotes an overflow to
+        // REAL: measured over the validator's own edge values, add-assoc disagrees on 140 triples of
+        // 1728 and mul-assoc on 118. Commutativity disagrees on none, so those two stay.
+        let names: Vec<String> = make_rewrite_rules(true)
+            .iter()
+            .map(|r| r.name.to_string())
+            .collect();
+        for gone in [
+            "add-assoc-l",
+            "add-assoc-r",
+            "mul-assoc-l",
+            "mul-assoc-r",
+            "sub-to-add",
+            "add-neg-to-sub",
+            "sub-antisym",
+            "double-neg",
+        ] {
+            assert!(!names.iter().any(|n| n == gone), "{} is back", gone);
+        }
+        assert!(names.iter().any(|n| n == "add-comm"));
+        assert!(names.iter().any(|n| n == "mul-comm"));
     }
 
     #[test]
