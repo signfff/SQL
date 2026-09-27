@@ -33,13 +33,6 @@ public final class EGraphCorpusCaseWriter {
     private static final int MAX_CASES = Integer.getInteger("sqlite3.egraph.corpus.maxCases", 5000);
     private static final int MAX_EMPTY_CASES = Integer.getInteger("sqlite3.egraph.corpus.maxEmptyCases", 1000);
     private static final int MAX_ROWS_PER_TABLE = Integer.getInteger("sqlite3.egraph.corpus.maxRowsPerTable", 200);
-    /**
-     * Rows of one table a snapshot keeps. Separate from the row cap above because the reader also limits a case to
-     * 12000 characters, and a wide row measured 3.8 KB - three of those already exceed it, however few statements they
-     * are written as.
-     */
-    private static final int MAX_SNAPSHOT_ROWS_PER_TABLE = Integer
-            .getInteger("sqlite3.egraph.corpus.maxSnapshotRowsPerTable", 24);
     // Capture every N-th case so the recorded window spans the whole long run
     // instead of just its first minutes. Default 1 keeps the old behavior.
     private static final int SAMPLE_INTERVAL = Integer.getInteger("sqlite3.egraph.corpus.sampleInterval", 1);
@@ -773,7 +766,7 @@ public final class EGraphCorpusCaseWriter {
                     .collect(java.util.stream.Collectors.joining(", "));
             String valueList = columns.stream().map(c -> "quote(" + quoteIdentifier(c.getName()) + ")")
                     .collect(java.util.stream.Collectors.joining(" || ', ' || "));
-            String sql = "SELECT " + valueList + " FROM " + quoteIdentifier(tableName) + " LIMIT " + Math.min(MAX_ROWS_PER_TABLE, MAX_SNAPSHOT_ROWS_PER_TABLE);
+            String sql = "SELECT " + valueList + " FROM " + quoteIdentifier(tableName) + " LIMIT " + MAX_ROWS_PER_TABLE;
             try (SQLancerResultSet rs = new SQLQueryAdapter(sql).executeAndGet(state)) {
                 if (rs == null) {
                     continue;
@@ -826,7 +819,7 @@ public final class EGraphCorpusCaseWriter {
                     .collect(java.util.stream.Collectors.joining(", "));
             String valueList = columns.stream().map(c -> "quote(" + quoteIdentifier(c) + ")")
                     .collect(java.util.stream.Collectors.joining(" || ', ' || "));
-            String sql = "SELECT " + valueList + " FROM " + quoteIdentifier(tableName) + " LIMIT " + Math.min(MAX_ROWS_PER_TABLE, MAX_SNAPSHOT_ROWS_PER_TABLE);
+            String sql = "SELECT " + valueList + " FROM " + quoteIdentifier(tableName) + " LIMIT " + MAX_ROWS_PER_TABLE;
             try (SQLancerResultSet rs = new SQLQueryAdapter(sql).executeAndGet(state)) {
                 if (rs == null) {
                     continue;
