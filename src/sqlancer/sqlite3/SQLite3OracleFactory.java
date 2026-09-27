@@ -52,6 +52,7 @@ import sqlancer.sqlite3.oracle.SQLite3Fuzzer;
 import sqlancer.sqlite3.oracle.SQLite3PivotedQuerySynthesisOracle;
 import sqlancer.sqlite3.oracle.SQLite3EGraphInputCorpus.CorpusQueryInput;
 import sqlancer.sqlite3.oracle.EGraphContextReplayWriter;
+import sqlancer.sqlite3.oracle.EGraphContextSnapshot;
 import sqlancer.sqlite3.oracle.EGraphPredicateFilter;
 import sqlancer.sqlite3.oracle.SQLite3EGraphInputCorpus;
 import sqlancer.sqlite3.oracle.EGraphSqlCoverage;
@@ -5335,6 +5336,10 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             if (success) {
                 logExecutedContextStatement(state, query);
                 EGraphContextReplayWriter.record(query.getQueryString());
+                // Also kept for this thread alone, so the trunk referee can put a second engine in
+                // the same position - including the databases this attached from memory, which a
+                // copy of the database file does not carry.
+                EGraphContextSnapshot.record(query.getQueryString());
             }
             return success;
         } catch (Throwable ignored) {

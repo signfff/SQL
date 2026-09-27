@@ -176,13 +176,29 @@ public final class EGraphTrunkReferee {
         return sb.toString();
     }
 
+    /**
+     * Separates the query's output from the output of the context statements that had to run first. They share one
+     * invocation because a database attached from memory does not outlive the process that attached it.
+     */
+    private static final String MARKER = "EGRAPH_REFEREE_OUTPUT_BEGINS";
+
     /** The query's output under the trunk build, or null when the build could not run it. */
     private static String run(Path database, String query) throws IOException, InterruptedException {
         List<String> command = new ArrayList<>(List.of(COMMAND.split("\\s+")));
         command.add(translatePath(database));
         Path script = Files.createTempFile("egraph-referee", ".sql");
         try {
-            Files.writeString(script, stripTrailingSemicolon(query) + ";" + System.lineSeparator(),
+            StringBuilder sql = new StringBuilder();
+            // The wrapper shapes reach for tables the context setup created, some of them in
+            // databases attached from memory, which the copied file does not carry. Replaying the
+            // context first is what lets this answer for those checks at all. Failures are left
+            // alone: a statement that no longer applies to this database is not the question.
+            for (String statement : EGraphContextSnapshot.current()) {
+                sql.append(stripTrailingSemicolon(statement)).append(';').append(System.lineSeparator());
+            }
+            sql.append("SELECT '").append(MARKER).append("';").append(System.lineSeparator());
+            sql.append(stripTrailingSemicolon(query)).append(';').append(System.lineSeparator());
+            Files.writeString(script, sql.toString(),
                     StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
             ProcessBuilder builder = new ProcessBuilder(command);
             builder.redirectInput(script.toFile());
@@ -193,7 +209,15 @@ public final class EGraphTrunkReferee {
                 process.destroyForcibly();
                 return null;
             }
-            return process.exitValue() == 0 ? normalise(output) : null;
+            // The exit code reflects the last statement that failed, context statements included, so
+            // it cannot say whether the query itself ran. The marker can: no marker means the script
+            // did not get that far.
+            int marker = output.lastIndexOf(MARKER);
+            if (marker < 0) {
+                return null;
+            }
+            int afterMarker = output.indexOf('\n', marker);
+            return afterMarker < 0 ? "" : normalise(output.substring(afterMarker + 1));
         } finally {
             Files.deleteIfExists(script);
         }
