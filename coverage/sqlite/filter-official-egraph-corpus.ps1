@@ -11,11 +11,15 @@ param(
 
     [int] $MaxCases = 20000,
 
-    [int] $MaxCaseSetupStatements = 40,
+    # These three must be the limits SQLite3EGraphInputCorpus applies, or this stage throws away cases
+    # the reader would have loaded. They were 40 / 8000 / 1200 with nothing saying why: measured on the
+    # 5000-case official corpus, that refused 943 cases (18.9%) that the reader accepts.
+    # Java: sqlite3.egraph.input.maxCaseSetupStatements / maxCaseSetupChars / maxCaseSetupStatementChars.
+    [int] $MaxCaseSetupStatements = 80,
 
-    [int] $MaxCaseSetupChars = 8000,
+    [int] $MaxCaseSetupChars = 12000,
 
-    [int] $MaxCaseSetupStatementChars = 1200,
+    [int] $MaxCaseSetupStatementChars = 2000,
 
     [string] $SqliteExe = "D:\sqlancer\coverage\sqlite\build\sqlite3_cov.exe",
 

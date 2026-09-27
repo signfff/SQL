@@ -12,6 +12,8 @@ param(
 
     [int]$MaxSetupStatements = 30000,
 
+    # Deliberately looser than the reader's 80: this stage only cuts the runaway cases, and
+    # filter-official-egraph-corpus.ps1 applies the reader's own limits afterwards.
     [int]$MaxCaseSetupStatements = 200,
 
     [switch]$FlatOutput

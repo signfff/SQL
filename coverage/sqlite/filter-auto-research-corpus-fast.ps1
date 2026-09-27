@@ -19,6 +19,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "egraph-corpus-format.ps1")
+
 $coverageRoot = "D:\sqlancer\coverage\sqlite"
 
 function Resolve-LatestAutoReplay {
@@ -175,120 +177,26 @@ function Get-CaseScore {
 function Read-EGraphCaseBlocks {
     param([string]$Path)
 
-    $result = New-Object System.Collections.Generic.List[object]
+    # The delta expansion lives in egraph-corpus-format.ps1, dot-sourced above: this stage only says
+    # which expanded cases it wants and what it wants to know about them.
     $seen = New-Object 'System.Collections.Generic.HashSet[string]'
-    $block = New-Object System.Text.StringBuilder
-    $baseQuery = New-Object System.Text.StringBuilder
-    # replay-all.sql is delta encoded (full snapshot on keyframes, only the
-    # changed statements in between). Accumulate them so every emitted corpus
-    # case carries a setup that can be replayed on its own.
-    $currentSetupLines = New-Object System.Collections.Generic.List[string]
-    $accumulatedSetupLines = New-Object System.Collections.Generic.List[string]
-    $inCase = $false
-    $inSetup = $false
-    $inBaseQuery = $false
-    $rows = $null
-    $setupStatements = 0
-    $setupChars = 0
-    $setupStatementTooLong = $false
-
-    foreach ($line in [System.IO.File]::ReadLines($Path)) {
-        $trimmed = $line.Trim()
-        if ($trimmed.StartsWith("-- EGRAPH_CORPUS_CASE_BEGIN")) {
-            $inCase = $true
-            $inSetup = $false
-            $inBaseQuery = $false
-            $rows = $null
-            $setupStatements = 0
-            $setupChars = 0
-            $setupStatementTooLong = $false
-            [void]$block.Clear()
-            [void]$baseQuery.Clear()
-            if ($trimmed -match "rows=(-?\d+)") {
-                $rows = [int]$Matches[1]
-            }
-            $line = $line.Replace(" setup=delta", " setup=full")
-        }
-        if (-not $inCase) {
-            continue
-        }
-
-        if ($trimmed -eq "-- EGRAPH_CORPUS_SETUP_DELTA") {
-            # Replay the accumulated snapshot first, then this case's delta.
-            $inSetup = $true
-            $inBaseQuery = $false
-            $currentSetupLines.Clear()
-            [void]$block.AppendLine("-- EGRAPH_CORPUS_SETUP_BEGIN")
-            foreach ($setupLine in $accumulatedSetupLines) {
-                $currentSetupLines.Add($setupLine)
-                [void]$block.AppendLine($setupLine)
-                $setupTrimmed = $setupLine.Trim()
-                if ($setupTrimmed.Length -gt 0 -and -not $setupTrimmed.StartsWith("--")) {
-                    $setupStatements++
-                    $setupChars += $setupTrimmed.Length
-                    if ($setupTrimmed.Length -gt $MaxCaseSetupStatementChars) {
-                        $setupStatementTooLong = $true
-                    }
-                }
-            }
-            continue
-        }
-
-        [void]$block.AppendLine($line)
-
-        if ($trimmed -eq "-- EGRAPH_CORPUS_SETUP_BEGIN") {
-            $inSetup = $true
-            $inBaseQuery = $false
-            $currentSetupLines.Clear()
-            continue
-        }
-        if ($trimmed -eq "-- EGRAPH_BASE_QUERY") {
-            if ($inSetup) {
-                $accumulatedSetupLines.Clear()
-                $accumulatedSetupLines.AddRange($currentSetupLines)
-            }
-            $inSetup = $false
-            $inBaseQuery = $true
-            continue
-        }
-        if ($trimmed.StartsWith("-- EGRAPH_REPLAY_QUERY")) {
-            $inBaseQuery = $false
-            continue
-        }
-        if ($trimmed.StartsWith("-- EGRAPH_CORPUS_CASE_END")) {
-            $query = ($baseQuery.ToString().Trim() -replace ";\s*$", "").Trim()
-            $caseText = $block.ToString().TrimEnd()
-            $dedupeKey = ($caseText -replace "\s+", " ")
-            if (($null -eq $rows -or $rows -gt 0) -and
-                    $setupStatements -le $MaxCaseSetupStatements -and
-                    $setupChars -le $MaxCaseSetupChars -and
-                    (-not $setupStatementTooLong) -and
-                    (Is-EGraphSelect -Statement $query) -and
-                    $seen.Add($dedupeKey)) {
-                $result.Add([PSCustomObject]@{
-                    Score = Get-CaseScore -BaseQuery $query -CaseBlock $caseText
-                    Rows  = $rows
-                    Query = $query
-                    Block = $caseText
-                })
-            }
-            $inCase = $false
-            $inSetup = $false
-            $inBaseQuery = $false
-            continue
-        }
-        if ($inSetup -and $trimmed.Length -gt 0 -and -not $trimmed.StartsWith("--")) {
-            $currentSetupLines.Add($line)
-            $setupStatements++
-            $setupChars += $trimmed.Length
-            if ($trimmed.Length -gt $MaxCaseSetupStatementChars) {
-                $setupStatementTooLong = $true
-            }
-            continue
-        }
-        if ($inBaseQuery -and -not $trimmed.StartsWith("--")) {
-            [void]$baseQuery.AppendLine($line)
-        }
+    $expanded = Expand-EGraphCorpusCases -Path $Path -Accept {
+        param($info)
+        ($null -eq $info.Rows -or $info.Rows -gt 0) -and
+            $info.SetupStatements -le $MaxCaseSetupStatements -and
+            $info.SetupChars -le $MaxCaseSetupChars -and
+            $info.LongestSetupStatement -le $MaxCaseSetupStatementChars -and
+            (Is-EGraphSelect -Statement $info.BaseQuery) -and
+            $seen.Add(($info.CaseText -replace "\s+", " "))
+    }
+    $result = New-Object System.Collections.Generic.List[object]
+    foreach ($case in $expanded) {
+        $result.Add([PSCustomObject]@{
+            Score = Get-CaseScore -BaseQuery $case.BaseQuery -CaseBlock $case.CaseText
+            Rows  = $case.Rows
+            Query = $case.BaseQuery
+            Block = $case.CaseText
+        })
     }
     return $result
 }

@@ -15,6 +15,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "egraph-corpus-format.ps1")
+
 Set-Location "D:\sqlancer"
 
 if ([string]::IsNullOrWhiteSpace($RunDir)) {
@@ -135,75 +137,16 @@ function Select-NonEmptyCases {
         [int] $Limit,
         [System.Collections.Generic.HashSet[string]] $SeenQueries
     )
+    # The delta expansion lives in egraph-corpus-format.ps1, dot-sourced above: this stage only says
+    # which expanded cases it wants.
+    $expanded = Expand-EGraphCorpusCases -Path $Path -Limit $Limit -Accept {
+        param($info)
+        ($null -ne $info.Rows -and $info.Rows -gt 0) -and $info.QueryBlockText.Length -gt 0 `
+                -and $SeenQueries.Add($info.QueryBlockText)
+    }
     $cases = New-Object System.Collections.Generic.List[string]
-    $inCase = $false
-    $inQuery = $false
-    $rows = $null
-    $block = New-Object System.Text.StringBuilder
-    $query = New-Object System.Text.StringBuilder
-    # replay-all.sql is delta encoded (full snapshot on keyframes, only the
-    # changed statements in between); accumulate them so each corpus case can be
-    # replayed on its own.
-    $inSetup = $false
-    $currentSetupLines = New-Object System.Collections.Generic.List[string]
-    $accumulatedSetupLines = New-Object System.Collections.Generic.List[string]
-    foreach ($line in [System.IO.File]::ReadLines($Path)) {
-        $trimmed = $line.Trim()
-        if ($trimmed.StartsWith("-- EGRAPH_CORPUS_CASE_BEGIN")) {
-            $inCase = $true
-            $inQuery = $false
-            $rows = $null
-            [void] $block.Clear()
-            [void] $query.Clear()
-            if ($trimmed -match "rows=(-?\d+)") {
-                $rows = [int] $matches[1]
-            }
-            $line = $line.Replace(" setup=delta", " setup=full")
-        }
-        if (-not $inCase) {
-            continue
-        }
-        if ($trimmed -eq "-- EGRAPH_CORPUS_SETUP_DELTA") {
-            # Replay the accumulated snapshot first, then this case's delta.
-            $inSetup = $true
-            $currentSetupLines.Clear()
-            [void] $block.AppendLine("-- EGRAPH_CORPUS_SETUP_BEGIN")
-            foreach ($setupLine in $accumulatedSetupLines) {
-                $currentSetupLines.Add($setupLine)
-                [void] $block.AppendLine($setupLine)
-            }
-            continue
-        }
-        if ($trimmed -eq "-- EGRAPH_CORPUS_SETUP_BEGIN") {
-            $inSetup = $true
-            $currentSetupLines.Clear()
-        } elseif ($inSetup -and $trimmed.StartsWith("-- EGRAPH_")) {
-            $inSetup = $false
-            $accumulatedSetupLines.Clear()
-            $accumulatedSetupLines.AddRange($currentSetupLines)
-        } elseif ($inSetup) {
-            $currentSetupLines.Add($line)
-        }
-        [void] $block.AppendLine($line)
-        if ($trimmed -eq "-- EGRAPH_BASE_QUERY") {
-            $inQuery = $true
-            continue
-        }
-        if ($trimmed.StartsWith("-- EGRAPH_CORPUS_CASE_END")) {
-            $caseQuery = (($query.ToString().Trim() -replace ";$", "").Trim() -replace "\s+", " ")
-            if (($null -ne $rows -and $rows -gt 0) -and $caseQuery.Length -gt 0 -and $SeenQueries.Add($caseQuery)) {
-                $cases.Add($block.ToString().TrimEnd())
-                if ($cases.Count -ge $Limit) {
-                    break
-                }
-            }
-            $inCase = $false
-            $inQuery = $false
-            continue
-        }
-        if ($inQuery) {
-            [void] $query.AppendLine($line)
-        }
+    foreach ($case in $expanded) {
+        $cases.Add($case.CaseText)
     }
     return $cases
 }
