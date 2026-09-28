@@ -123,6 +123,13 @@ public class EGraphSqlCoverage {
      */
     static final AtomicInteger cardinalityOnlyComparisons = new AtomicInteger(0);
 
+    /**
+     * Comparisons abandoned because the statement is built on top of whichever rows an unordered LIMIT kept, which makes
+     * the row count as arbitrary as the rows. A large number here is a corpus written before the base queries carried a
+     * total order over their LIMIT, not a defect.
+     */
+    static final AtomicInteger incomparableTruncations = new AtomicInteger(0);
+
     // Checks that ran with an empty original result on purpose (see EMPTY_BASE_CHECK_PERCENT).
     static final AtomicInteger emptyBaseChecks = new AtomicInteger(0);
 
@@ -259,6 +266,11 @@ public class EGraphSqlCoverage {
         if (orderOnlySamples.size() < MAX_EMPTY_QUERY_SAMPLES) {
             orderOnlySamples.add(compactSql(originalSql) + "  ||  " + compactSql(variantSql));
         }
+    }
+
+    /** A comparison abandoned because nothing about the result is determined. See the field. */
+    public static void recordIncomparableTruncation() {
+        incomparableTruncations.incrementAndGet();
     }
 
     /** A comparison that could only look at the row count. See the field. */
@@ -975,6 +987,12 @@ public class EGraphSqlCoverage {
                                 entry.getValue().get(), percentage(entry.getValue().get(), probeEmpty)));
             }
             w.println();
+            if (incomparableTruncations.get() > 0) {
+                w.printf("  Comparisons abandoned (statement built on arbitrarily truncated rows): %d%n",
+                        incomparableTruncations.get());
+                w.println();
+            }
+
             if (cardinalityOnlyComparisons.get() > 0) {
                 w.printf("  Comparisons limited to the row count (query truncates arbitrarily): %d%n",
                         cardinalityOnlyComparisons.get());

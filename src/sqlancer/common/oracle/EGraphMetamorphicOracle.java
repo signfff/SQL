@@ -32,31 +32,31 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
         private final String rewriteQuery;
         private final Function<String, String> variantWrapper;
         private final String source;
-        private final boolean rowsTruncatedArbitrarily;
+        private final sqlancer.sqlite3.SQLite3OracleFactory.TruncationKind truncation;
 
         public GeneratedQuery(String originalQuery, String rewriteQuery, Function<String, String> variantWrapper,
                 String source) {
-            this(originalQuery, rewriteQuery, variantWrapper, source, false);
+            this(originalQuery, rewriteQuery, variantWrapper, source,
+                    sqlancer.sqlite3.SQLite3OracleFactory.TruncationKind.NONE);
         }
 
         /**
-         * @param rowsTruncatedArbitrarily
-         *            whether the query keeps only some of its rows without saying which ones - a LIMIT with no total
-         *            order over it. Two spellings then legitimately return different rows, because the whole point of a
-         *            rewrite is to change the plan and the plan is what decides which rows the LIMIT keeps. Only the row
-         *            count is comparable for such a query.
+         * @param truncation
+         *            how a LIMIT with no total order over it limits what can be compared. TRAILING leaves the row count
+         *            comparable; NESTED leaves nothing comparable, because the rest of the statement is built on top of
+         *            whichever rows the LIMIT happened to keep.
          */
         public GeneratedQuery(String originalQuery, String rewriteQuery, Function<String, String> variantWrapper,
-                String source, boolean rowsTruncatedArbitrarily) {
+                String source, sqlancer.sqlite3.SQLite3OracleFactory.TruncationKind truncation) {
             this.originalQuery = originalQuery;
             this.rewriteQuery = rewriteQuery;
             this.variantWrapper = variantWrapper;
             this.source = source;
-            this.rowsTruncatedArbitrarily = rowsTruncatedArbitrarily;
+            this.truncation = truncation;
         }
 
-        boolean rowsTruncatedArbitrarily() {
-            return rowsTruncatedArbitrarily;
+        sqlancer.sqlite3.SQLite3OracleFactory.TruncationKind truncation() {
+            return truncation;
         }
 
         String getOriginalQuery() {
@@ -263,11 +263,18 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                                 "EGRAPH single-side empty result mismatch! Original rows: %d, variant rows: %d.%nFirst query: \"%s\"%nSecond query: \"%s\"",
                                 originalResult.size(), variantResult.size(), originalQuery, variantQuery));
                     }
-                    if (generatedQuery.rowsTruncatedArbitrarily()) {
-                        // Which rows survive an unordered LIMIT is the plan's choice, so only how
-                        // many survive is comparable here. The count is still worth comparing: it is
-                        // min(limit, matching rows), and the matching rows are what the rewrite is
-                        // about.
+                    if (generatedQuery
+                            .truncation() == sqlancer.sqlite3.SQLite3OracleFactory.TruncationKind.NESTED) {
+                        // The statement is built on top of whichever rows an unordered LIMIT kept, so
+                        // the count is as arbitrary as the rows and there is nothing here to compare.
+                        // A two-hour run reported 4 rows against 5 for two spellings that match the
+                        // same 13 rows once the LIMIT is removed, on both 3.53.4 and trunk.
+                        sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordIncomparableTruncation();
+                    } else if (generatedQuery
+                            .truncation() == sqlancer.sqlite3.SQLite3OracleFactory.TruncationKind.TRAILING) {
+                        // The statement ends on the LIMIT, so it returns min(limit, matching rows) and
+                        // two spellings that match the same rows agree on that number whichever ones
+                        // they reached first. The rows themselves are still the plan's choice.
                         sqlancer.sqlite3.oracle.EGraphSqlCoverage.recordCardinalityOnlyComparison();
                         if (originalResult.size() != variantResult.size()) {
                             logMismatch(originalResult, variantResult, originalQuery, variantQuery, state);
@@ -335,7 +342,9 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
                             .log(String.format("Original query: %s%nVariant query: %s", originalQuery, variantQuery));
                     if (!corpusCaseRecorded) {
                         sqlancer.sqlite3.oracle.EGraphCorpusCaseWriter.recordCase(state, rewriteQuery,
-                                originalResult.size(), replayQueries, !generatedQuery.rowsTruncatedArbitrarily());
+                                originalResult.size(), replayQueries,
+                                generatedQuery
+                                        .truncation() == sqlancer.sqlite3.SQLite3OracleFactory.TruncationKind.NONE);
                         corpusCaseRecorded = true;
                     }
                     throw e;
@@ -343,7 +352,9 @@ public class EGraphMetamorphicOracle<G extends SQLGlobalState<?, ?>> implements 
             }
             if (!corpusCaseRecorded && testedCount > 0) {
                 sqlancer.sqlite3.oracle.EGraphCorpusCaseWriter.recordCase(state, rewriteQuery, originalResult.size(),
-                        replayQueries, !generatedQuery.rowsTruncatedArbitrarily());
+                        replayQueries,
+                                generatedQuery
+                                        .truncation() == sqlancer.sqlite3.SQLite3OracleFactory.TruncationKind.NONE);
                 corpusCaseRecorded = true;
             }
             if (recordExample && !exampleVariantQueries.isEmpty()) {

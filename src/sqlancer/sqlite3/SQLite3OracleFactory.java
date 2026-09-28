@@ -1472,7 +1472,7 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
                 : getNoSetupCorpusSourceName(selectedInput);
         return new EGraphMetamorphicOracle.GeneratedQuery(originalQuery, rewriteQuery,
                 variant -> wrapEGraphCoverageShape(variant, finalOriginalContext),
-                querySource, !selectedInput.rowsDetermined() && truncatesRowsArbitrarily(originalQuery));
+                querySource, selectedInput.rowsDetermined() ? TruncationKind.NONE : truncationKind(originalQuery));
     }
 
     /**
@@ -1485,10 +1485,11 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
      * where which row is found does not reach the result. Anything else can truncate.
      * </p>
      */
-    private static boolean truncatesRowsArbitrarily(String sql) {
+    static TruncationKind truncationKind(String sql) {
         if (sql == null) {
-            return false;
+            return TruncationKind.NONE;
         }
+        TruncationKind worst = TruncationKind.NONE;
         java.util.regex.Matcher limits = TRUNCATING_LIMIT.matcher(sql);
         while (limits.find()) {
             long rows = Long.parseLong(limits.group(1));
@@ -1498,9 +1499,51 @@ public enum SQLite3OracleFactory implements OracleFactory<SQLite3GlobalState> {
             if (rows <= 1 && limits.group(2) != null) {
                 continue;
             }
+            // A LIMIT that closes a subquery has the rest of the statement built on top of whichever
+            // rows it kept, so the count is as arbitrary as the rows. A LIMIT the statement ends on
+            // keeps min(limit, matching rows), and two spellings that match the same rows agree on
+            // that number whichever ones they visited first.
+            if (limits.group(2) != null || !isLastClause(sql, limits.end())) {
+                return TruncationKind.NESTED;
+            }
+            worst = TruncationKind.TRAILING;
+        }
+        return worst;
+    }
+
+    private static boolean isLastClause(String sql, int afterLimit) {
+        String rest = sql.substring(afterLimit).trim();
+        if (rest.startsWith(";")) {
+            rest = rest.substring(1).trim();
+        }
+        if (rest.isEmpty()) {
             return true;
         }
-        return false;
+        // OFFSET is the only thing that may follow and still leave the count determined.
+        java.util.regex.Matcher offset = TRAILING_OFFSET.matcher(rest);
+        return offset.matches();
+    }
+
+    private static final java.util.regex.Pattern TRAILING_OFFSET = java.util.regex.Pattern
+            .compile("OFFSET\\s+\\d+\\s*;?", java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    /**
+     * How a query's LIMIT affects what can be compared.
+     *
+     * <p>
+     * Found by a two-hour run, which reported a mismatch of 4 rows against 5 for two spellings that match exactly the
+     * same 13 rows when the LIMIT is removed - measured on both 3.53.4 and trunk. The LIMIT sat inside a derived table
+     * that the wrapper then filtered, so which ten of the thirteen it kept decided the final count, and the row count
+     * this class had been falling back on was no more stable than the rows.
+     * </p>
+     */
+    public enum TruncationKind {
+        /** Nothing is truncated, or only a LIMIT 1 closing a subquery: compare the rows. */
+        NONE,
+        /** The statement ends on the LIMIT: the rows are arbitrary but their number is not. */
+        TRAILING,
+        /** Something is built on top of the truncated rows: nothing about the result is comparable. */
+        NESTED
     }
 
     private static final java.util.regex.Pattern TRUNCATING_LIMIT = java.util.regex.Pattern
