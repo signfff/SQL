@@ -1386,6 +1386,24 @@ fn extract_randomized_impl(
 
     path.insert(id);
     let nodes = &egraph[id].nodes;
+    // Uniformly at random, and measured rather than assumed.
+    //
+    // The obvious improvement is to weight this pick toward spellings that can change an access path
+    // - a comparison's e-class holds the comparison itself next to `NOT (the opposite)`, a BETWEEN, an
+    // OR of two ranges and an AND of two bounds, and only the first is what SQLite normalises back to.
+    // Built that way, class-relative, a 4-to-1 spread, and A/B'd over four 150 s runs alternating:
+    //
+    //   distinct variants per check    7.51  7.54  weighted      8.42  8.12  uniform
+    //   checks reaching 5+ plans      14.4% 15.0%  weighted     16.9% 15.6%  uniform
+    //
+    // It made things slightly worse, consistently in both rounds, and the mechanism is the reason:
+    // concentrating the distribution makes more of the random walks render to the same string, dedup
+    // removes them, and fewer distinct variants survive to be compared. With a fixed walk budget and
+    // dedup at the end, variant count and per-variant plan relevance trade directly against each
+    // other - and how many plans a check reaches turns out to depend more on how many variants it got
+    // than on which spellings they were. So the leverage is not here; it is in raising the number of
+    // usable variants (the node and time budget below, which the runner always exhausts) or in adding
+    // language nodes, so that genuinely new shapes exist instead of existing ones being reweighted.
     let idx = rng.gen_range(0..nodes.len());
     let node = &nodes[idx];
 
