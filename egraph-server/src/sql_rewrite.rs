@@ -1396,14 +1396,25 @@ fn extract_randomized_impl(
     //   distinct variants per check    7.51  7.54  weighted      8.42  8.12  uniform
     //   checks reaching 5+ plans      14.4% 15.0%  weighted     16.9% 15.6%  uniform
     //
-    // It made things slightly worse, consistently in both rounds, and the mechanism is the reason:
-    // concentrating the distribution makes more of the random walks render to the same string, dedup
-    // removes them, and fewer distinct variants survive to be compared. With a fixed walk budget and
-    // dedup at the end, variant count and per-variant plan relevance trade directly against each
-    // other - and how many plans a check reaches turns out to depend more on how many variants it got
-    // than on which spellings they were. So the leverage is not here; it is in raising the number of
-    // usable variants (the node and time budget below, which the runner always exhausts) or in adding
-    // language nodes, so that genuinely new shapes exist instead of existing ones being reweighted.
+    // It made things slightly worse, consistently in both rounds. The first explanation offered for
+    // that was wrong and is worth recording as such: it was not that concentrating the distribution
+    // made more walks render to the same string. Counted directly (see extraction_walk_outcomes),
+    // duplicates are 0.0% of attempts, and for a predicate with a rich e-graph all 16 requested
+    // variants survive extraction, validation and dedup. So neither dedup nor validation is the
+    // limit, and why weighting cost variants is not established.
+    //
+    // What the same count did find is the one channel that is large: 82% of walks are abandoned,
+    // because a cycle was reached with no childless node in the cycling class, and each abandonment
+    // throws away the whole variant rather than that subtree. Commutativity and associativity put a
+    // cycle in nearly every boolean e-class, so this is structural.
+    //
+    // Raising the budget does not help either, measured the same way: node 600 / 100 ms against
+    // 200 / 40 ms gave 7.16 and 6.93 variants per check against 8.14 and 8.08, with 31% fewer pairs
+    // compared in total - a bigger graph means more cycles, so more of the walks abandon.
+    //
+    // Which leaves the count of variants per check being set by how rewritable the predicate is - an
+    // opaque atom gets the three identity shapes, a rich boolean predicate gets all 16 - and that is
+    // decided by the language, not by extraction.
     let idx = rng.gen_range(0..nodes.len());
     let node = &nodes[idx];
 
@@ -2849,6 +2860,61 @@ mod tests {
         }
         assert!(names.iter().any(|n| n == "add-comm"));
         assert!(names.iter().any(|n| n == "mul-comm"));
+    }
+
+    /// Where the 3200 extraction walks per request actually go.
+    ///
+    /// Both measured attempts to raise variant yield - weighting the pick, raising the node budget -
+    /// came back negative, so this counts the outcomes directly instead of guessing which channel is
+    /// the bottleneck: walks abandoned on a cycle, walks that rendered a string already seen, and
+    /// walks that produced a new variant.
+    #[test]
+    fn extraction_walk_outcomes() {
+        let sql = "SELECT * FROM t0 WHERE (t0.c0 > 3 AND t0.c1 <= 7) OR t0.c2 <> 0";
+        let expr = parse_predicate(sql);
+        let (recexpr, _symbols) = sql_expr_to_recexpr(&expr, sql);
+        let (egraph, root) = perform_rewrites(&recexpr, 20, true);
+
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut abandoned = 0usize;
+        let mut duplicate = 0usize;
+        let mut fresh = 0usize;
+        let attempts = 16 * 200;
+        for _ in 0..attempts {
+            match extract_randomized(&egraph, root) {
+                None => abandoned += 1,
+                Some(candidate) => {
+                    if seen.insert(candidate.to_string()) {
+                        fresh += 1;
+                    } else {
+                        duplicate += 1;
+                    }
+                }
+            }
+        }
+        println!(
+            "e-graph classes={} nodes={} | attempts={} abandoned={} ({:.1}%) duplicate={} ({:.1}%) fresh={}",
+            egraph.number_of_classes(),
+            egraph.total_size(),
+            attempts,
+            abandoned,
+            100.0 * abandoned as f64 / attempts as f64,
+            duplicate,
+            100.0 * duplicate as f64 / attempts as f64,
+            fresh
+        );
+        assert!(fresh > 0, "no variant was extracted at all");
+
+        // What the pipeline after extraction keeps. extract_variants stops as soon as it has
+        // max_variants * 5 distinct candidates, so the 3200-attempt budget above is never the limit in
+        // production; the loss is downstream of it.
+        let candidates = extract_variants(&egraph, root, 16 * 5);
+        let kept = generate_equivalent_where_clauses(&expr, sql, 16, 20).expect("generates");
+        println!(
+            "requested=16 candidates_extracted={} survived_validation_and_dedup={}",
+            candidates.len(),
+            kept.len()
+        );
     }
 
     #[test]
