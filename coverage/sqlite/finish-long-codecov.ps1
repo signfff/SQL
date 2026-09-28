@@ -11,21 +11,26 @@
     # Prepends the self-contained part of the EGRAPH context setup to every chunk, so the probe
     # tables a wrapper shape queries (egraph_fts4c and friends) exist in the chunk's own database.
     #
-    # OPT-IN, because it was measured NET NEGATIVE. A/B on the same 2000 captured cases from the
-    # 20260909 run, four workers, identical input:
+    # ON by default since 20260928, on a measurement that reverses the earlier one.
+    #
+    # It used to be opt-in: an A/B on 2000 cases from the 20260909 run had it cost 0.80pp of line
+    # coverage (71.90% against 72.70%) while cutting missing-context errors from 250 to 201, and the
+    # mechanism for the loss was never explained. That verdict was taken when a case's own snapshot
+    # still carried the probe tables, so the prelude was mostly redundant and only added work.
+    #
+    # e77bb19a changed that: a snapshot now holds only the objects the base query names, and a probe
+    # table is named by the wrapper, not the base query. Missing-context errors per replayed case went
+    # from 0.13 to 8.56 - measured across four runs, the break falling exactly on that commit - and
+    # the prelude stopped being redundant. Re-measured on the 20260928 two-hour capture, same input,
+    # four workers:
     #
     #                 line      branch    function   missing-context errors
-    #   prelude on    71.90%    76.62%    81.95%     201
-    #   prelude on    71.86%    76.58%    81.92%     201     <- same-arm noise: 0.04pp
-    #   prelude off   72.70%    77.41%    82.43%     250
+    #   prelude off   78.08%    83.00%    85.78%     89530
+    #   prelude on    79.23%    84.09%    87.03%        18
     #
-    # So it does what it was built for - "no such table: egraph_fts4c" drops from 287 to 233 and
-    # missing-context errors from 250 to 201 - and still costs 0.80pp of line coverage, 20x the
-    # 0.04pp same-arm noise. Not chunk timeouts (zero in both arms) and not CREATE conflicts (zero
-    # "already exists" in both arms); the mechanism is still unexplained. Until it is, the default
-    # stays off so the pipeline keeps the better number, and the switch keeps the experiment
-    # reproducible.
-    [switch] $ContextPrelude
+    # It now pays 1.15pp rather than costing 0.80pp. Turn it off with -ContextPrelude:$false to
+    # reproduce the old arm.
+    [switch] $ContextPrelude = $true
 )
 
 Set-StrictMode -Version Latest
