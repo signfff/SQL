@@ -1,0 +1,2102 @@
+[
+{
+"status": "open",
+"age": "2.8 hours ago",
+"link": "forumpost/f5d54eb0c5",
+"title": "Rowid lookup with a REAL key near 2^63 disagrees with `=` comparison semantics",
+"posts": "no replies"
+},
+{
+"status": "open",
+"age": "3.2 hours ago",
+"link": "forumpost/ccaf6772b6",
+"title": "an hour field of 24 is accepted but never normalised, so `julianday()` and `date()` disagree about which day it is",
+"posts": "no replies"
+},
+{
+"status": "open",
+"age": "3.2 hours ago",
+"link": "forumpost/c361e019fd",
+"title": "PRAGMA foreign_keys = 256 turns foreign keys OFF: a boolean pragma value is truncated to 8 bits",
+"posts": "no replies"
+},
+{
+"status": "open",
+"age": "3.3 hours ago",
+"link": "forumpost/9c3a6cb5fe",
+"title": "FTS5: snippet(), highlight() and fts5_get_locale() truncate the column argument to 32 bits",
+"posts": "no replies"
+},
+{
+"status": "open",
+"age": "3.3 hours ago",
+"link": "forumpost/0ee3d0537b",
+"title": "unicode(), LIKE and GLOB read U+FFFE and U+FFFF as U+FFFD",
+"posts": "no replies"
+},
+{
+"status": "open",
+"age": "3.3 hours ago",
+"link": "forumpost/331b694bb5",
+"title": "rtree_i32 applies the x0<=x1 constraint after narrowing to 32 bits, so a well-ordered box is rejected",
+"posts": "no replies"
+},
+{
+"status": "resolved",
+"age": "4.5 hours ago",
+"link": "forumpost/0b173db2bc",
+"title": "Double-free in sqlite3_intck_test_sql() (ext/intck/sqlite3intck.c)",
+"posts": "2 posts spanning 3.4 hours"
+},
+{
+"status": "resolved",
+"age": "12.7 hours ago",
+"link": "forumpost/1662e91b4a",
+"title": "CLI discards the error code from sqlite3_format_query_result(), so some statements fail silently and exit 0",
+"posts": "2 posts spanning 1.6 days"
+},
+{
+"status": "resolved",
+"age": "15.4 hours ago",
+"link": "forumpost/169e7bf845",
+"title": "FTS5 silently truncates a token at 32768 bytes, so MATCH returns documents that do not contain the term",
+"posts": "5 posts spanning 34.9 hours"
+},
+{
+"status": "resolved",
+"age": "17.5 hours ago",
+"link": "forumpost/355dadd323",
+"title": "printf()/format() reads the '*' width and precision modulo 2^32, silently shortening the result",
+"posts": "2 posts spanning 1.7 days"
+},
+{
+"status": "resolved",
+"age": "19.4 hours ago",
+"link": "forumpost/054908b9b3",
+"title": "pgoffset is one page too low for every overflow page",
+"posts": "2 posts spanning 8.8 hours"
+},
+{
+"status": "not-planned",
+"age": "32.9 hours ago",
+"link": "forumpost/b1f572d07b",
+"title": "FTS5 performance regression at check-in 9138223013 for unanalyzed database",
+"posts": "2 posts spanning 44.9 minutes"
+},
+{
+"status": "resolved",
+"age": "1.5 days ago",
+"link": "forumpost/fe64608580",
+"title": "Inconsistent json_replace() Arity Error and Implicit-Aggregation Behavior Under WHERE 0 with Scalar-Subquery Arguments",
+"posts": "2 posts spanning 9.6 hours"
+},
+{
+"status": "resolved",
+"age": "1.5 days ago",
+"link": "forumpost/e03a7d6e50",
+"title": "Heap-buffer-overflow reads in decodeSegment() and decodeDoclist() (ext/fts3/tool/fts3view.c)",
+"posts": "2 posts spanning 3.4 hours"
+},
+{
+"status": "resolved",
+"age": "1.8 days ago",
+"link": "forumpost/fc7f1392d1",
+"title": "FTS3/FTS4 snippet() still returns a real column for colnum = 4294967298 on a 3-column table",
+"posts": "2 posts spanning 8.6 hours"
+},
+{
+"status": "resolved",
+"age": "2.4 days ago",
+"link": "forumpost/84fc369d07",
+"title": "Two-argument substr() with a large negative start drops characters from the end",
+"posts": "2 posts spanning 1.6 hours"
+},
+{
+"status": "open",
+"age": "2.8 days ago",
+"link": "forumpost/4eaaf15bcf",
+"title": "Unexpected result of JSON table function before LEFT JOIN",
+"posts": "no replies"
+},
+{
+"status": "resolved",
+"age": "4.2 days ago",
+"link": "forumpost/77227cc2ef",
+"title": "R*Tree rounds coordinates inward outside float32's normal range and misses rows",
+"posts": "2 posts spanning 79.3 minutes"
+},
+{
+"status": "resolved",
+"age": "4.5 days ago",
+"link": "forumpost/4360819914",
+"title": "`--useapicall` misses nested callback declarators",
+"posts": "2 posts spanning 3.3 days"
+},
+{
+"status": "resolved",
+"age": "4.5 days ago",
+"link": "forumpost/d5677a7b69",
+"title": "Variadic APIs receive `SQLITE_APICALL` in generated stdcall headers",
+"posts": "2 posts spanning 3.3 days"
+},
+{
+"status": "resolved",
+"age": "6.6 days ago",
+"link": "forumpost/a7faf704ca",
+"title": "HCTree Deletion Bug",
+"posts": "2 posts spanning 2.1 hours"
+},
+{
+"status": "open",
+"age": "10.9 days ago",
+"link": "forumpost/8eaeef38e0",
+"title": "3.53.3: SIGBUS",
+"posts": "7 posts spanning 18.2 days"
+},
+{
+"status": "resolved",
+"age": "11.8 days ago",
+"link": "forumpost/5b47db7c0e",
+"title": "Qualified column can resolve to different scopes depending on the column",
+"posts": "2 posts spanning 12.8 hours"
+},
+{
+"status": "resolved",
+"age": "12.3 days ago",
+"link": "forumpost/9e6cbb57b8",
+"title": "Parenthesized single-table list swallows missing INDEXED BY",
+"posts": "2 posts spanning 3.3 hours"
+},
+{
+"status": "resolved",
+"age": "13.7 days ago",
+"link": "forumpost/0b5fc19194",
+"title": "fossildelta.c: delta_parse() returns error",
+"posts": "2 posts spanning 3.4 hours"
+},
+{
+"status": "resolved",
+"age": "13.7 days ago",
+"link": "forumpost/ae4663395c",
+"title": "delta_parse() memory leak",
+"posts": "2 posts spanning 2.9 hours"
+},
+{
+"status": "resolved",
+"age": "19.6 days ago",
+"link": "forumpost/b02657db71",
+"title": "fts5TestUtf8(): 4-byte branch never validates z[i+3] and advances i by 3",
+"posts": "2 posts spanning 1.9 hours"
+},
+{
+"status": "resolved",
+"age": "19.6 days ago",
+"link": "forumpost/1b94275d20",
+"title": "bug: subquery and GROUP BY cause column type to seemingly change mid-query",
+"posts": "2 posts spanning 14.1 hours"
+},
+{
+"status": "resolved",
+"age": "20.3 days ago",
+"link": "forumpost/435df8438a",
+"title": "Recent version (3.53.4) sqlite3 seems to always shorten column names in .mode column",
+"posts": "4 posts spanning 9.3 days"
+},
+{
+"status": "resolved",
+"age": "20.5 days ago",
+"link": "forumpost/dc612777dd",
+"title": "Sqlite 3.46.1 to 3.53.4 breaks UPDATE FROM INNER JOIN which worked with 3.35.5",
+"posts": "4 posts spanning 2.8 hours"
+},
+{
+"status": "resolved",
+"age": "21.7 days ago",
+"link": "forumpost/c9b27f7c45",
+"title": "Assertion failure in sqlite3VdbeExec with -sorterref 64 and correlated subquery ORDER BY",
+"posts": "2 posts spanning 11.1 hours"
+},
+{
+"status": "resolved",
+"age": "22.6 days ago",
+"link": "forumpost/b0b71a42b0",
+"title": "Unexpected results from json_each() in a query containing a RIGHT JOIN",
+"posts": "2 posts spanning 6.9 hours"
+},
+{
+"status": "resolved",
+"age": "22.8 days ago",
+"link": "forumpost/b2663e88cb",
+"title": "bug(correctness): ANALYZE on 10 rows of NULL followed by INSERT leads to wrong NULLS FIRST query result",
+"posts": "2 posts spanning 11.7 hours"
+},
+{
+"status": "resolved",
+"age": "27.0 days ago",
+"link": "forumpost/c60f2a246e",
+"title": "`ext/misc/compress.c:uncompressFunc` size-header wrap into `sqlite3_malloc` then zlib write past the buffer",
+"posts": "4 posts spanning 8.8 days"
+},
+{
+"status": "resolved",
+"age": "28.5 days ago",
+"link": "forumpost/f20ea456ac",
+"title": "Unchecked sqlite3_mprintf() NULL fed to libc printf(\"%s\") for zSQLTabName in main() (ext/session/changeset.c)",
+"posts": "2 posts spanning 1.6 hours"
+},
+{
+"status": "resolved",
+"age": "28.5 days ago",
+"link": "forumpost/9b4276628a",
+"title": "Unchecked NULL from sqlite3_column_name() strlen'd in fts3ContentColumns() (ext/fts3/fts3.c)",
+"posts": "2 posts spanning 80.8 minutes"
+},
+{
+"status": "resolved",
+"age": "28.5 days ago",
+"link": "forumpost/18338dc19d",
+"title": "NULL pointer dereference on a scan with no addrExplain in qrfEqpStats() (ext/qrf/qrf.c)",
+"posts": "2 posts spanning 87.4 minutes"
+},
+{
+"status": "resolved",
+"age": "28.5 days ago",
+"link": "forumpost/ba00fdddda",
+"title": "Unchecked NULL from sqlite3_vmprintf() in sqlite3_fprintf() and sqlite3_vfprintf() (ext/misc/sqlite3_stdio.c)",
+"posts": "2 posts spanning 81.3 minutes"
+},
+{
+"status": "resolved",
+"age": "28.5 days ago",
+"link": "forumpost/20d89d613b",
+"title": "NULL pointer dereference on a SQL NULL vocabulary entry in amatchNext() (ext/misc/amatch.c)",
+"posts": "2 posts spanning 72.4 minutes"
+},
+{
+"status": "resolved",
+"age": "28.6 days ago",
+"link": "forumpost/c06a3c0d3f",
+"title": "NULL pointer write on allocation failure in readSqlFromFile() (ext/expert/expert.c)",
+"posts": "2 posts spanning 13.4 minutes"
+},
+{
+"status": "resolved",
+"age": "28.6 days ago",
+"link": "forumpost/6246e57faf",
+"title": "Unexpected results of JSON functions with a partial index",
+"posts": "2 posts spanning 8.8 hours"
+},
+{
+"status": "resolved",
+"age": "28.8 days ago",
+"link": "forumpost/4f3e1f1cd7",
+"title": "bug(correctness): nested RIGHT JOIN and WHERE give erroneous extra row in result",
+"posts": "2 posts spanning 9.7 hours"
+},
+{
+"status": "resolved",
+"age": "29.4 days ago",
+"link": "forumpost/6b4af027fe",
+"title": "bug(constraints): `ALTER TABLE` silently changes meaning of SQL it doesn't rewrite, leaving a stale partial index",
+"posts": "2 posts spanning 29.4 hours"
+},
+{
+"status": "resolved",
+"age": "29.4 days ago",
+"link": "forumpost/6433ac73df",
+"title": "bug(corruption): FTS5 detail='none' and 'secure-delete' loses index entries, rows unfindable by `match`, index corrupted",
+"posts": "2 posts spanning 27.1 hours"
+},
+{
+"status": "resolved",
+"age": "29.6 days ago",
+"link": "forumpost/f65fd0e5fd",
+"title": "bug(constraints): ALTER TABLE ADD COLUMN REAL DEFAULT <large integer> desynchronises table and index",
+"posts": "2 posts spanning 23.0 hours"
+},
+{
+"status": "resolved",
+"age": "29.6 days ago",
+"link": "forumpost/209d3c6472",
+"title": "Unexpected results of a row-value IN over a PRIMARY KEY column",
+"posts": "2 posts spanning 31.7 hours"
+},
+{
+"status": "resolved",
+"age": "29.8 days ago",
+"link": "forumpost/891e588eda",
+"title": "sqlite3_rsync: REPLICA_READY debug message passes an extra variadic argument",
+"posts": "2 posts spanning 8.6 hours"
+},
+{
+"status": "resolved",
+"age": "30.1 days ago",
+"link": "forumpost/16fb53c2c5",
+"title": "meta: re: obscure bugs (thank you for how reliable sqlite is <3)",
+"posts": "no replies"
+},
+{
+"status": "resolved",
+"age": "30.2 days ago",
+"link": "forumpost/8ebae091a9",
+"title": "bug: ordered correlated scalar subquery mixing integer and text values gives wrong result",
+"posts": "2 posts spanning 23.1 hours"
+},
+{
+"status": "resolved",
+"age": "30.3 days ago",
+"link": "forumpost/06f6eaac7a",
+"title": "bug(correctness): UNIQUE index violation on recursive trigger update, debug build aborts from sqlite3VdbeExec's memIsValid()",
+"posts": "3 posts spanning 21.8 hours"
+},
+{
+"status": "resolved",
+"age": "31.8 days ago",
+"link": "forumpost/b16fe2bff5",
+"title": "bug(correctness): a DESC index makes IN / NOT IN ignore a NULL in the right hand set",
+"posts": "2 posts spanning 2.6 hours"
+},
+{
+"status": "resolved",
+"age": "33.2 days ago",
+"link": "forumpost/5b12c2ded1",
+"title": "ext/misc/normalize.c: __GCC__ typo leaves deliberate_fall_through inactive",
+"posts": "2 posts spanning 58.8 minutes"
+},
+{
+"status": "resolved",
+"age": "34.3 days ago",
+"link": "forumpost/c4108141ec",
+"title": "Lemon: no--D invocation triggers glibc qsort() nonnull diagnostic in a downstream UBSan build",
+"posts": "3 posts spanning 16.2 hours"
+},
+{
+"status": "resolved",
+"age": "34.4 days ago",
+"link": "forumpost/f6f724c233",
+"title": "scanstatus2.test 5.x crashes the testfixture on every Windows build: `ptr:%p` key vs `format \"ptr:0x%llx\"` lookup",
+"posts": "2 posts spanning 39.9 minutes"
+},
+{
+"status": "resolved",
+"age": "34.6 days ago",
+"link": "forumpost/d882a9e7e2",
+"title": "`ext/misc/zipfile.c:zipfileUpdate` cursor advanced onto sibling freed by UPDATE OR REPLACE",
+"posts": "2 posts spanning 13.7 hours"
+},
+{
+"status": "resolved",
+"age": "34.6 days ago",
+"link": "forumpost/73b7036d7c",
+"title": "`qpvtab.c:qpvtabColumn` indexes `zData` with a negative `iRowid` after embedded-NUL `strlen` truncation",
+"posts": "2 posts spanning 12.6 hours"
+},
+{
+"status": "resolved",
+"age": "34.6 days ago",
+"link": "forumpost/b476b0be8d",
+"title": "`fts5DlidxIterInit` does not cap `nLvl`; `NextR` / `PrevR` recurse once per planted `%_data` height",
+"posts": "2 posts spanning 12.8 hours"
+},
+{
+"status": "resolved",
+"age": "34.7 days ago",
+"link": "forumpost/a6afe0c3aa",
+"title": "`ext/misc/vtablog.c:vtablogQuote` null dereference after `sqlite3_value_blob` fails to expand a zeroblob",
+"posts": "2 posts spanning 10.4 hours"
+},
+{
+"status": "resolved",
+"age": "34.7 days ago",
+"link": "forumpost/5e2a89b59f",
+"title": "`btree.c:clearDatabasePage` unbounded recursive descent on a crafted interior-page chain",
+"posts": "2 posts spanning 10.5 hours"
+},
+{
+"status": "resolved",
+"age": "35.6 days ago",
+"link": "forumpost/f527de24e6",
+"title": "Inconsistent results for an OR of IN predicates in projection and WHERE",
+"posts": "2 posts spanning 10.1 hours"
+},
+{
+"status": "resolved",
+"age": "35.7 days ago",
+"link": "forumpost/aa262739b6",
+"title": "Geopoly accepts non-finite polygons and its RTree optimization misses rows",
+"posts": "2 posts spanning 5.1 hours"
+},
+{
+"status": "resolved",
+"age": "35.7 days ago",
+"link": "forumpost/a0b5005fe4",
+"title": "`btree.c:checkTreePage` recursive walk of a linear interior-page chain",
+"posts": "2 posts spanning 2.7 hours"
+},
+{
+"status": "resolved",
+"age": "35.7 days ago",
+"link": "forumpost/3a04dbc45d",
+"title": "FIX: testsuite fails to run on BSDs",
+"posts": "3 posts spanning 4.8 days"
+},
+{
+"status": "resolved",
+"age": "35.8 days ago",
+"link": "forumpost/576beee6c1",
+"title": "`ext/misc/sha1.c:sha1QueryFunc` NULL-source `memcpy` after zeroblob expand failure",
+"posts": "2 posts spanning 29.5 minutes"
+},
+{
+"status": "resolved",
+"age": "35.8 days ago",
+"link": "forumpost/5839678a1f",
+"title": "Right Join Subroutine Depth Assert",
+"posts": "3 posts spanning 3.2 hours"
+},
+{
+"status": "resolved",
+"age": "35.9 days ago",
+"link": "forumpost/66684f0db6",
+"title": "FIX: Autosetup find_tclconfig.tcl can't find tclConfig.sh",
+"posts": "3 posts spanning 4.5 days"
+},
+{
+"status": "resolved",
+"age": "36.2 days ago",
+"link": "forumpost/260e565478",
+"title": "Include guard in src/pcache.h never defines its own macro",
+"posts": "2 posts spanning 4.5 hours"
+},
+{
+"status": "resolved",
+"age": "36.4 days ago",
+"link": "forumpost/d9f0efa7ea",
+"title": "Signed integer overflow in fts5SegmentSize() (ext/fts5/fts5_index.c)",
+"posts": "2 posts spanning 80.2 minutes"
+},
+{
+"status": "resolved",
+"age": "36.6 days ago",
+"link": "forumpost/126380beef",
+"title": "Uninitialized page-buffer disclosure via WAL/DB page-size mismatch (3.53.4)",
+"posts": "3 posts spanning 49.3 minutes"
+},
+{
+"status": "resolved",
+"age": "36.7 days ago",
+"link": "forumpost/28e0b6eeaa",
+"title": "UAF in FTS3/FTS4 snippet()",
+"posts": "3 posts spanning 4.6 hours"
+},
+{
+"status": "resolved",
+"age": "36.8 days ago",
+"link": "forumpost/ce5de46635",
+"title": "Unexpected results when comparing fts5vocab.term with COLLATE NOCASE",
+"posts": "2 posts spanning 1.6 hours"
+},
+{
+"status": "resolved",
+"age": "36.8 days ago",
+"link": "forumpost/c9bd7c8222",
+"title": "heap OOB write in sqlite3changeset_apply()",
+"posts": "2 posts spanning 25.3 hours"
+},
+{
+"status": "resolved",
+"age": "37.5 days ago",
+"link": "forumpost/33ab99f569",
+"title": "Inconsistent behaviour with PRAGMA writable_schema=1",
+"posts": "2 posts spanning 16.5 minutes"
+},
+{
+"status": "resolved",
+"age": "38.6 days ago",
+"link": "forumpost/94168ca5c1",
+"title": "Unexpected results when comparing fts5vocab.term with a numeric value",
+"posts": "2 posts spanning 7.4 hours"
+},
+{
+"status": "resolved",
+"age": "39.2 days ago",
+"link": "forumpost/ec73529bdc",
+"title": "UBSan reports undefined behavior in FTS5 xSetAuxdataInt testcase",
+"posts": "5 posts spanning 6.4 days"
+},
+{
+"status": "resolved",
+"age": "39.6 days ago",
+"link": "forumpost/998078695e",
+"title": "FIX: Name collision in variables for building Tcl extension",
+"posts": "2 posts spanning 19.6 hours"
+},
+{
+"status": "resolved",
+"age": "39.7 days ago",
+"link": "forumpost/648d8e5b83",
+"title": "Unexpected results when filtering a RIGHT JOIN by a row-value IN",
+"posts": "2 posts spanning 9.1 hours"
+},
+{
+"status": "resolved",
+"age": "39.8 days ago",
+"link": "forumpost/a8aadbdcb5",
+"title": "Unexpected results when comparing fts4aux.term with a numeric value",
+"posts": "2 posts spanning 3.5 hours"
+},
+{
+"status": "resolved",
+"age": "40.5 days ago",
+"link": "forumpost/51b256b79a",
+"title": "Unexpected results of row-value IN with a multi-column index after ANALYZE",
+"posts": "2 posts spanning 10.1 hours"
+},
+{
+"status": "resolved",
+"age": "40.5 days ago",
+"link": "forumpost/6c605af471",
+"title": "Bug in test suite",
+"posts": "2 posts spanning 4.4 hours"
+},
+{
+"status": "resolved",
+"age": "40.6 days ago",
+"link": "forumpost/d4dcff8410",
+"title": "Unexpected results when filtering a RIGHT JOIN over a subquery reading a VIRTUAL generated column",
+"posts": "2 posts spanning 8.0 hours"
+},
+{
+"status": "resolved",
+"age": "40.8 days ago",
+"link": "forumpost/588d1a33df",
+"title": "Database disk image is malformed when querying fts4aux",
+"posts": "2 posts spanning 5.6 hours"
+},
+{
+"status": "resolved",
+"age": "41.4 days ago",
+"link": "forumpost/f9d7a71210",
+"title": "Unexpected result by JSON functions",
+"posts": "2 posts spanning 10.8 hours"
+},
+{
+"status": "resolved",
+"age": "42.5 days ago",
+"link": "forumpost/3f9b721826",
+"title": "immutable URI flag opening files read-write",
+"posts": "2 posts spanning 61.9 minutes"
+},
+{
+"status": "resolved",
+"age": "47.0 days ago",
+"link": "forumpost/a8504bada8",
+"title": "Signed integer overflow in WebAssembly pstack allocation",
+"posts": "2 posts spanning 5.0 hours"
+},
+{
+"status": "resolved",
+"age": "48.8 days ago",
+"link": "forumpost/d3b14ada9b",
+"title": "External-content FTS5 index corrupted by a second AFTER UPDATE trigger issuing a nested UPDATE on the content tab",
+"posts": "4 posts spanning 15.1 hours"
+},
+{
+"status": "resolved",
+"age": "49.1 days ago",
+"link": "forumpost/9d7e7e1395",
+"title": "Potential unexpected result for an rtree rowid comparison with numeric text",
+"posts": "3 posts spanning 15.6 hours"
+},
+{
+"status": "resolved",
+"age": "49.6 days ago",
+"link": "forumpost/08ea6cef24",
+"title": "Specialized sorter comparator for REAL leading keys (~10% on speedtest1 fp)",
+"posts": "2 posts spanning 2.1 days"
+},
+{
+"status": "resolved",
+"age": "49.8 days ago",
+"link": "forumpost/5a175f91a7",
+"title": "PTP - FTS5 detail=none prefix merge underallocates the merged rowid doclist",
+"posts": "2 posts spanning 2.3 hours"
+},
+{
+"status": "resolved",
+"age": "50.6 days ago",
+"link": "forumpost/6c97dbe469",
+"title": "Unexpected result from row-value IN with min()",
+"posts": "2 posts spanning 6.0 hours"
+},
+{
+"status": "resolved",
+"age": "50.7 days ago",
+"link": "forumpost/612d3feb3c",
+"title": "CSV output on Windows uses \"\\r\\r\\n\" as a row separator",
+"posts": "2 posts spanning 4.7 hours"
+},
+{
+"status": "resolved",
+"age": "51.3 days ago",
+"link": "forumpost/e287c411f0",
+"title": "DBVuln3: Stack exhaustion (unbounded recursion) in fts3 exprToString() and the fts3_exprtest() debug SQL function",
+"posts": "2 posts spanning 10.3 hours"
+},
+{
+"status": "resolved",
+"age": "51.3 days ago",
+"link": "forumpost/5b8c282be6",
+"title": "DBVuln2: NULL pointer dereference in fts3 expression parser (getNextNode) via NULL column-name argument to fts3_exprtest",
+"posts": "2 posts spanning 10.3 hours"
+},
+{
+"status": "resolved",
+"age": "51.3 days ago",
+"link": "forumpost/a833912c82",
+"title": "DBVuln15: approximate_match virtual table truncates 64-bit distance< bound via sqlite3_value_int()",
+"posts": "2 posts spanning 9.0 hours"
+},
+{
+"status": "resolved",
+"age": "51.4 days ago",
+"link": "forumpost/7120e46709",
+"title": "DBVuln39: ROLLBACK on a zipfile virtual table is silently implemented as COMMIT, permanently persisting data",
+"posts": "2 posts spanning 6.3 hours"
+},
+{
+"status": "resolved",
+"age": "51.4 days ago",
+"link": "forumpost/89b6eb598e",
+"title": "DBVuln37: templatevtab returns only 9 of the documented 10 rows due to off-by-one in xEof",
+"posts": "2 posts spanning 5.9 hours"
+},
+{
+"status": "resolved",
+"age": "51.4 days ago",
+"link": "forumpost/cd10af6f45",
+"title": "DBVuln38: vtablogColumn silently returns empty string for column index 25",
+"posts": "2 posts spanning 5.6 hours"
+},
+{
+"status": "resolved",
+"age": "51.5 days ago",
+"link": "forumpost/576e09d8d4",
+"title": "DBVuln11: diskused() emits malformed \"NaN.0%\" percentage values when a subreport matches zero rows",
+"posts": "2 posts spanning 5.7 hours"
+},
+{
+"status": "resolved",
+"age": "51.5 days ago",
+"link": "forumpost/c166c8b3ed",
+"title": "DBVuln17: Truncation of 64-bit depth bound to a 32-bit int in closureFilter() causes the transitive_closure virtual table",
+"posts": "2 posts spanning 4.2 hours"
+},
+{
+"status": "resolved",
+"age": "51.6 days ago",
+"link": "forumpost/af258ab6c9",
+"title": "DBVuln16: Self-referential tablename in transitive_closure causes unbounded recursion through closureFilter",
+"posts": "2 posts spanning 3.4 hours"
+},
+{
+"status": "resolved",
+"age": "54.7 days ago",
+"link": "forumpost/23badf511d",
+"title": "lifelineVuln1: Repeated cksumvfs initialization makes the global VFS self-referential and causes infinite recursion",
+"posts": "4 posts spanning 30.6 hours"
+},
+{
+"status": "resolved",
+"age": "54.8 days ago",
+"link": "forumpost/70718890f1",
+"title": "lifelineVuln8: simple tokenizer silently ignores the sole delimiter argument (argv[0]) and falls back to default delimiters",
+"posts": "4 posts spanning 28.1 hours"
+},
+{
+"status": "resolved",
+"age": "55.3 days ago",
+"link": "forumpost/911cd573aa",
+"title": "lifelineVuln5: apndWrite size-limit check ignores prefix offset, silently breaking the documented 1GiB total-file cap",
+"posts": "2 posts spanning 17.3 hours"
+},
+{
+"status": "resolved",
+"age": "55.3 days ago",
+"link": "forumpost/c616047e6d",
+"title": "\"ON clause references tables to its right\" is wrong in both directions for recursive CTEs",
+"posts": "2 posts spanning 5.7 hours"
+},
+{
+"status": "resolved",
+"age": "55.5 days ago",
+"link": "forumpost/c5bd9cdf99",
+"title": "lifelineVuln6: Generic substitution rule cost bypasses documented 1..1000 range check",
+"posts": "2 posts spanning 11.6 hours"
+},
+{
+"status": "resolved",
+"age": "55.5 days ago",
+"link": "forumpost/4e5ba72547",
+"title": "lifelineVuln4: Uncontrolled recursion in sha3_query lets attacker-controlled SQL text crash the process via stack exhaustion",
+"posts": "2 posts spanning 11.1 hours"
+},
+{
+"status": "resolved",
+"age": "55.5 days ago",
+"link": "forumpost/6b5f71d12e",
+"title": "lifelineVuln2: Repeated vfsstat initialization makes the default VFS wrapper self-referential",
+"posts": "2 posts spanning 10.8 hours"
+},
+{
+"status": "resolved",
+"age": "55.5 days ago",
+"link": "forumpost/6870c930b7",
+"title": "Unexpected result by RIGHT JOIN with a UNIQUE INDEX",
+"posts": "2 posts spanning 11.7 hours"
+},
+{
+"status": "resolved",
+"age": "55.5 days ago",
+"link": "forumpost/e1e5d6c749",
+"title": "lifelineVuln7: snippet() column-index argument not bounds-checked against actual column count",
+"posts": "2 posts spanning 10.4 hours"
+},
+{
+"status": "resolved",
+"age": "55.6 days ago",
+"link": "forumpost/135787579e",
+"title": "Unexpected result by WHERE on a GROUP BY view with two IN",
+"posts": "2 posts spanning 10.1 hours"
+},
+{
+"status": "resolved",
+"age": "55.7 days ago",
+"link": "forumpost/61856ecef7",
+"title": "lifelineVuln3: Unbounded recursion in eval() causes C stack overflow and crash",
+"posts": "2 posts spanning 6.6 hours"
+},
+{
+"status": "resolved",
+"age": "55.8 days ago",
+"link": "forumpost/5040b8805d",
+"title": "lifelineVuln9: multitype_text() silently truncates BLOB values containing embedded NUL bytes",
+"posts": "2 posts spanning 5.0 hours"
+},
+{
+"status": "resolved",
+"age": "55.8 days ago",
+"link": "forumpost/9fa56b4524",
+"title": "SQLite: redundant IS NOT NULL after BETWEEN recomputes an expensive expression",
+"posts": "2 posts spanning 3.2 days"
+},
+{
+"status": "resolved",
+"age": "55.8 days ago",
+"link": "forumpost/4f43bdc23f",
+"title": "lifelineVuln10: sha1() and sha1b() silently return NULL for zero-length BLOB input instead of the empty-string hash",
+"posts": "2 posts spanning 4.0 hours"
+},
+{
+"status": "resolved",
+"age": "58.5 days ago",
+"link": "forumpost/a379e641be",
+"title": "Bug107-88: spellfix editDist3Install OOM-Triggered Use-After-Free",
+"posts": "2 posts spanning 11.2 hours"
+},
+{
+"status": "resolved",
+"age": "59.4 days ago",
+"link": "forumpost/2b9c9f373b",
+"title": "SQLite: empty INTERSECT and EXCEPT branches are not folded to an empty result",
+"posts": "2 posts spanning 11.2 hours"
+},
+{
+"status": "resolved",
+"age": "59.5 days ago",
+"link": "forumpost/c717bab163",
+"title": "SQLite: adding OR FALSE disables an otherwise usable index search",
+"posts": "2 posts spanning 10.4 hours"
+},
+{
+"status": "resolved",
+"age": "59.5 days ago",
+"link": "forumpost/171653718c",
+"title": "SQLite: redundant DISTINCT on a primary-key IN subquery disables the ROWID IN-operator optimization",
+"posts": "2 posts spanning 8.6 hours"
+},
+{
+"status": "resolved",
+"age": "59.5 days ago",
+"link": "forumpost/3408c48ac0",
+"title": "SQLite: redundant ORDER BY inside EXISTS prevents a covering-index lookup",
+"posts": "2 posts spanning 8.6 hours"
+},
+{
+"status": "resolved",
+"age": "59.7 days ago",
+"link": "forumpost/e7c6a88ad0",
+"title": "SQLite: duplicate ORDER BY terms are not eliminated and force a temporary sort",
+"posts": "2 posts spanning 5.1 hours"
+},
+{
+"status": "resolved",
+"age": "59.7 days ago",
+"link": "forumpost/dac297efda",
+"title": "SQLite: duplicate GROUP BY expressions are not eliminated and force a temporary B-tree",
+"posts": "2 posts spanning 5.1 hours"
+},
+{
+"status": "resolved",
+"age": "60.6 days ago",
+"link": "forumpost/a72f9c9f1c",
+"title": "Vuln98-79: resolve.c lookupName() Column-level Authorizer Bypass on FULL JOIN USING",
+"posts": "4 posts spanning 19.3 days"
+},
+{
+"status": "resolved",
+"age": "60.7 days ago",
+"link": "forumpost/6caf587bf1",
+"title": "Unexpected Results from json_array() with an Indexed json_extract() Expression",
+"posts": "2 posts spanning 5.4 hours"
+},
+{
+"status": "resolved",
+"age": "60.8 days ago",
+"link": "forumpost/45c932e385",
+"title": "Unexpected Results When Comparing Rowid with a Large Floating-Point Value",
+"posts": "3 posts spanning 1.8 hours"
+},
+{
+"status": "resolved",
+"age": "61.3 days ago",
+"link": "forumpost/bbfc5aa41a",
+"title": "Bloom Filter on TEXT-Only Indexed Join Adds Work but Prunes Nothing",
+"posts": "3 posts spanning 2.7 days"
+},
+{
+"status": "resolved",
+"age": "63.2 days ago",
+"link": "forumpost/872649ba1b",
+"title": "BUG: Reproducible SIGSEGV via readline in REPL",
+"posts": "12 posts spanning 2.3 days"
+},
+{
+"status": "not-planned",
+"age": "67.6 days ago",
+"link": "forumpost/ed39b0d326",
+"title": "Command-line app mislables some blobs as NULL",
+"posts": "3 posts spanning 46.7 minutes"
+},
+{
+"status": "not-planned",
+"age": "70.5 days ago",
+"link": "forumpost/02c82b6216",
+"title": "hctree: setmode(LEADER) disables MVCC when physical page 16 is in use (pagemap flag bit leaks into sqlite3HctFilePeekTransid)",
+"posts": "5 posts spanning 1.8 hours"
+},
+{
+"status": "resolved",
+"age": "74.6 days ago",
+"link": "forumpost/6adc0069e9",
+"title": "Possible signed integer overflow in sqlite3Update() with extreme number of indexes",
+"posts": "3 posts spanning 10.7 hours"
+},
+{
+"status": "resolved",
+"age": "75.4 days ago",
+"link": "forumpost/174c043172",
+"title": "FTS5 Uninitialized Memory Read in `fts5DataRead`",
+"posts": "2 posts spanning 41.5 minutes"
+},
+{
+"status": "resolved",
+"age": "75.4 days ago",
+"link": "forumpost/d5aa8afbb0",
+"title": "Off-by-one OOB heap write in R-tree extension (anQueue array)",
+"posts": "2 posts spanning 16.3 minutes"
+},
+{
+"status": "resolved",
+"age": "75.6 days ago",
+"link": "forumpost/9b5fc891f8",
+"title": "Stack overflow in sqlite3_rsync driven by compromised origin server",
+"posts": "2 posts spanning 37.0 minutes"
+},
+{
+"status": "resolved",
+"age": "75.7 days ago",
+"link": "forumpost/f95eadc7ee",
+"title": "sqlite3 -Ac command crashes on Windows",
+"posts": "2 posts spanning 17.4 hours"
+},
+{
+"status": "resolved",
+"age": "78.6 days ago",
+"link": "forumpost/7156ffd522",
+"title": "Vuln105-86: FTS5 xPhraseFirstColumn Missing iPhrase Bound Check (detail=columns) Heap Over-read",
+"posts": "2 posts spanning 3.1 hours"
+},
+{
+"status": "resolved",
+"age": "78.6 days ago",
+"link": "forumpost/0810a2fa42",
+"title": "Vuln102-83: RBU rbuDeltaApply Wrong Operator Breaks Copy Deltas and Reads 1 Byte Past the Delta Blob",
+"posts": "2 posts spanning 2.2 hours"
+},
+{
+"status": "resolved",
+"age": "78.6 days ago",
+"link": "forumpost/129453a05f",
+"title": "Vuln103-84: RBU rbuGetUpdateStmt Heap Over-read via Short rbu_control Mask",
+"posts": "2 posts spanning 1.6 hours"
+},
+{
+"status": "resolved",
+"age": "78.7 days ago",
+"link": "forumpost/70f269849f",
+"title": "Vuln104-85: RBU Negative rbu_state ROW Value Yields aFrame[-1] Out-of-bounds Read",
+"posts": "2 posts spanning 69.5 minutes"
+},
+{
+"status": "resolved",
+"age": "78.7 days ago",
+"link": "forumpost/2309dfa7b4",
+"title": "Vuln106-87: normalize sqlite3_normalize 1-byte Heap Underflow on Leading \"in(\"",
+"posts": "2 posts spanning 42.1 minutes"
+},
+{
+"status": "resolved",
+"age": "78.9 days ago",
+"link": "forumpost/ae0d08554d",
+"title": "Vuln101-82: session sessionAppendPartialUpdate Heap Over-read on Rebase Column-count Mismatch",
+"posts": "2 posts spanning 18.7 hours"
+},
+{
+"status": "resolved",
+"age": "79.4 days ago",
+"link": "forumpost/a651ddb372",
+"title": "Vuln100-81: fileio fsdir() Uninitialized Stack Read / Info-leak on readlink() Failure",
+"posts": "2 posts spanning 7.4 hours"
+},
+{
+"status": "resolved",
+"age": "79.5 days ago",
+"link": "forumpost/da7e510c61",
+"title": "Vuln99-80: intck intckParseCreateIndex Heap/Global Over-read on Empty Index Text",
+"posts": "2 posts spanning 6.5 hours"
+},
+{
+"status": "resolved",
+"age": "79.8 days ago",
+"link": "forumpost/40a701e8cd",
+"title": "Vuln96-77: json_each/json_tree Heap Over-read via JSONB Object with Dangling Trailing Label",
+"posts": "6 posts spanning 29.4 hours"
+},
+{
+"status": "resolved",
+"age": "80.9 days ago",
+"link": "forumpost/e0b5cb0bc0",
+"title": "Vuln95-76: fossildelta delta_apply() Heap Over-read via Non-NUL-terminated Delta Blob",
+"posts": "2 posts spanning 4.6 hours"
+},
+{
+"status": "resolved",
+"age": "80.9 days ago",
+"link": "forumpost/e6f72aee24",
+"title": "Vuln97-78: json() Heap Over-read in jsonTranslateBlobToText FLOAT5 \"-\" Branch",
+"posts": "2 posts spanning 4.5 hours"
+},
+{
+"status": "resolved",
+"age": "81.4 days ago",
+"link": "forumpost/1df8438598",
+"title": "Vuln94-75: FTS5 fts5SecureDeleteOverflow Heap Over-read via Unvalidated szLeaf",
+"posts": "2 posts spanning 71.6 minutes"
+},
+{
+"status": "resolved",
+"age": "81.4 days ago",
+"link": "forumpost/9215dc498b",
+"title": "Vuln93-72: Signed Integer Overflow in FTS3/FTS4 fts3StringAppend Grow Test Bypasses Realloc",
+"posts": "2 posts spanning 43.0 minutes"
+},
+{
+"status": "resolved",
+"age": "83.8 days ago",
+"link": "forumpost/ee2c65173f",
+"title": "SQLite 3.53.2 - MSan(MemorySanitizer) use-of-uninitialized-value in sqlite3ProcessJoin (union misuse)",
+"posts": "2 posts spanning 4.6 minutes"
+},
+{
+"status": "resolved",
+"age": "86.5 days ago",
+"link": "forumpost/a7ac7a7236",
+"title": "PTP - Late vtab module registration leaves shadow tables writable",
+"posts": "2 posts spanning 2.3 days"
+},
+{
+"status": "resolved",
+"age": "87.2 days ago",
+"link": "forumpost/0598dfabe2",
+"title": "Vuln89-70: FTS5 fts5SegIterNextInit Unvalidated iTermOff Heap Over-read (tokendata=1)",
+"posts": "2 posts spanning 5.6 hours"
+},
+{
+"status": "resolved",
+"age": "87.3 days ago",
+"link": "forumpost/e1cc671bbe",
+"title": "Vuln90-71: FTS5 Integrity-Check Signed Integer Overflow Bypasses Leaf-Term Bound Check",
+"posts": "2 posts spanning 4.3 hours"
+},
+{
+"status": "resolved",
+"age": "87.4 days ago",
+"link": "forumpost/a03c31bd91",
+"title": "Vuln92-73: fuzzer Extension NULL Pointer Dereference on MATCH NULL",
+"posts": "2 posts spanning 58.5 minutes"
+},
+{
+"status": "resolved",
+"age": "87.4 days ago",
+"link": "forumpost/4764c12d60",
+"title": "Vuln91-72: amatch 16-bit Truncation of amatch_word.nMatch Causes Negative-index Heap Over-read",
+"posts": "2 posts spanning 65.5 minutes"
+},
+{
+"status": "resolved",
+"age": "88.6 days ago",
+"link": "forumpost/52a40f5827",
+"title": "PTP - Generated expressions bypass SQLITE_FUNCTION authorizer denials",
+"posts": "2 posts spanning 2.8 hours"
+},
+{
+"status": "resolved",
+"age": "88.6 days ago",
+"link": "forumpost/ab0e42a0d6",
+"title": "SQLite Session Rebaser Integer Overflow → Heap Buffer Overflow",
+"posts": "2 posts spanning 2.8 hours"
+},
+{
+"status": "resolved",
+"age": "88.6 days ago",
+"link": "forumpost/784f5a165d",
+"title": "Vuln83-64: Heap Over-read in intck intckGetToken Bracket-quoted Token Scan",
+"posts": "2 posts spanning 4.5 hours"
+},
+{
+"status": "resolved",
+"age": "88.6 days ago",
+"link": "forumpost/00a8cb97ea",
+"title": "Vuln88-69: Signed Integer Overflow in zipfile() Aggregate Size Computation",
+"posts": "2 posts spanning 2.7 hours"
+},
+{
+"status": "resolved",
+"age": "88.7 days ago",
+"link": "forumpost/d575982192",
+"title": "Vuln82-63: FTS5 Integrity-Check Heap Over-read via Unvalidated Leaf Term Length",
+"posts": "3 posts spanning 5.7 hours"
+},
+{
+"status": "resolved",
+"age": "88.7 days ago",
+"link": "forumpost/1f8a1c3df3",
+"title": "Vuln87-68: spellfix1Dequote Unbounded Heap Overflow on Unbalanced-quote Command Value",
+"posts": "2 posts spanning 3.0 hours"
+},
+{
+"status": "resolved",
+"age": "88.7 days ago",
+"link": "forumpost/23186be9e9",
+"title": "Vuln85-66: decimal decimalNewFromText Unbounded Whitespace-skip Over-read",
+"posts": "2 posts spanning 3.6 hours"
+},
+{
+"status": "resolved",
+"age": "88.7 days ago",
+"link": "forumpost/d2dcffab3c",
+"title": "SQLite RTree Off-by-One OOB Heap Write in anQueue",
+"posts": "2 posts spanning 66.9 minutes"
+},
+{
+"status": "resolved",
+"age": "88.7 days ago",
+"link": "forumpost/b71ad625f8",
+"title": "Vuln84-65: closure closureDequote Missing NUL Terminator Heap Over-read",
+"posts": "2 posts spanning 2.9 hours"
+},
+{
+"status": "resolved",
+"age": "88.7 days ago",
+"link": "forumpost/4f1974c1e7",
+"title": "Vuln86-67: diskused Side-effecting Function Mis-tagged SQLITE_INNOCUOUS",
+"posts": "2 posts spanning 1.7 hours"
+},
+{
+"status": "resolved",
+"age": "88.8 days ago",
+"link": "forumpost/7b67768455",
+"title": "Vuln80-61: Heap Buffer Overflow in FTS3/FTS4 fts3EvalDeferredPhrase",
+"posts": "2 posts spanning 3.5 hours"
+},
+{
+"status": "resolved",
+"age": "89.5 days ago",
+"link": "forumpost/083a36298f",
+"title": "PTP - Crafted Rollback Journal Can Delete an Arbitrary File",
+"posts": "5 posts spanning 26.5 hours"
+},
+{
+"status": "resolved",
+"age": "89.6 days ago",
+"link": "forumpost/aa1b676f07",
+"title": "PTP - Side-effect sqlite_log() is treated as innocuous",
+"posts": "2 posts spanning 5.0 hours"
+},
+{
+"status": "resolved",
+"age": "89.6 days ago",
+"link": "forumpost/43ac2dc175",
+"title": "PTP - sqlite3_drop_modules() races module hash iteration",
+"posts": "2 posts spanning 2.8 hours"
+},
+{
+"status": "resolved",
+"age": "89.6 days ago",
+"link": "forumpost/287ca98713",
+"title": "PTP - %!J UTF-8 precision expansion narrows four-gigabyte input",
+"posts": "2 posts spanning 3.5 hours"
+},
+{
+"status": "resolved",
+"age": "89.7 days ago",
+"link": "forumpost/83b7196aa0",
+"title": "PTP - Negative sqlite3_str_append() length corrupts heap state",
+"posts": "2 posts spanning 69.1 minutes"
+},
+{
+"status": "resolved",
+"age": "90.4 days ago",
+"link": "forumpost/21be730e79",
+"title": "PTP - Corrupt index cell pointer crosses page boundary",
+"posts": "2 posts spanning 5.6 hours"
+},
+{
+"status": "resolved",
+"age": "90.6 days ago",
+"link": "forumpost/c8a6383810",
+"title": "Denial of Service in FTS5 via Corrupted nPgTombstone Integer Overflow in Tombstone Rebuild",
+"posts": "4 posts spanning 23.3 hours"
+},
+{
+"status": "resolved",
+"age": "90.7 days ago",
+"link": "forumpost/2a0524f45d",
+"title": "PTP - Heap buffer overflow in sqlite3ParseUri for over-1GiB file: URI filenames",
+"posts": "2 posts spanning 2.1 hours"
+},
+{
+"status": "resolved",
+"age": "90.7 days ago",
+"link": "forumpost/f003017806",
+"title": "Vuln80-61: Stale Backup Source Index (Type Confusion / NULL Pointer Dereference) in src/backup.c",
+"posts": "2 posts spanning 5.1 hours"
+},
+{
+"status": "resolved",
+"age": "90.7 days ago",
+"link": "forumpost/6e0fcdb960",
+"title": "PTP - Malformed UTF-8 precision in %!s allows oversized memcpy",
+"posts": "2 posts spanning 44.7 minutes"
+},
+{
+"status": "resolved",
+"age": "90.7 days ago",
+"link": "forumpost/b8827c1792",
+"title": "PTP - Odd UTF-16 prepare length reads past caller buffer",
+"posts": "2 posts spanning 73.0 minutes"
+},
+{
+"status": "resolved",
+"age": "90.8 days ago",
+"link": "forumpost/beccba698c",
+"title": "SQLITE_OMIT_FLOATING_POINT causes compilation error",
+"posts": "3 posts spanning 4.5 hours"
+},
+{
+"status": "resolved",
+"age": "91.4 days ago",
+"link": "forumpost/7ca9b30852",
+"title": "Vuln79-60: Heap Out-of-Bounds Read in ext/misc/spellfix.c spellfix1FilterForMatch Missing nPattern>0 Guard",
+"posts": "2 posts spanning 2.6 hours"
+},
+{
+"status": "resolved",
+"age": "91.4 days ago",
+"link": "forumpost/c7a522411b",
+"title": "Internal Function Execution Bypass via DEFAULT() Expression in Schema",
+"posts": "2 posts spanning 3.3 hours"
+},
+{
+"status": "resolved",
+"age": "91.5 days ago",
+"link": "forumpost/931be51907",
+"title": "Heap Use-After-Free in sqlite3_backup_step() via Attached Database Realloc",
+"posts": "2 posts spanning 1.7 hours"
+},
+{
+"status": "resolved",
+"age": "91.6 days ago",
+"link": "forumpost/2cad73df77",
+"title": "Heap Buffer Overflow in sqlite3changegroup_change_blob via Negative Length Parameter",
+"posts": "2 posts spanning 55.7 minutes"
+},
+{
+"status": "resolved",
+"age": "91.6 days ago",
+"link": "forumpost/dd56a01a37",
+"title": "Heap Buffer Overflow Read in intckGetToken() via Unterminated Bracket Identifier",
+"posts": "2 posts spanning 45.7 minutes"
+},
+{
+"status": "resolved",
+"age": "91.6 days ago",
+"link": "forumpost/1e1bf204b5",
+"title": "Out-of-Bounds Read in qpvtab via Unmapped Rowid Sentinel in xBestIndex()",
+"posts": "2 posts spanning 8.8 minutes"
+},
+{
+"status": "resolved",
+"age": "91.7 days ago",
+"link": "forumpost/c354e41d81",
+"title": "Vuln78-59: Heap Out-of-Bounds Read in src/os_kv.c kvvfsDecodeJournal Base-26 Length Parser Missing Separator Guard",
+"posts": "3 posts spanning 6.6 hours"
+},
+{
+"status": "resolved",
+"age": "91.8 days ago",
+"link": "forumpost/5c0898bafb",
+"title": "Vuln76-57: NULL Pointer Dereference in ext/misc/unionvtab.c via NULL Table Name From Source Query",
+"posts": "2 posts spanning 5.4 hours"
+},
+{
+"status": "resolved",
+"age": "91.8 days ago",
+"link": "forumpost/3d8183f2ee",
+"title": "Vuln74-55: NULL Pointer Dereference in ext/misc/explain.c explainFilter Reads argv[0] with argc==0",
+"posts": "2 posts spanning 5.6 hours"
+},
+{
+"status": "resolved",
+"age": "91.8 days ago",
+"link": "forumpost/fb7d0f027e",
+"title": "Vuln75-56: Heap Out-of-Bounds Read in ext/misc/nextchar.c findNextChars via Non-Deterministic Field Expression",
+"posts": "2 posts spanning 5.2 hours"
+},
+{
+"status": "resolved",
+"age": "91.8 days ago",
+"link": "forumpost/1c7bf1b3d2",
+"title": "Vuln77-58: Heap Out-of-Bounds Read in ext/misc/fuzzer.c fuzzerDequote Missing NUL Terminator",
+"posts": "2 posts spanning 4.5 hours"
+},
+{
+"status": "resolved",
+"age": "91.8 days ago",
+"link": "forumpost/118956f674",
+"title": "Vuln73-54: Heap Buffer Overflow in ext/misc/decimal.c decimal_round via decimal_expand with Hardcoded nFrac=0",
+"posts": "2 posts spanning 5.0 hours"
+},
+{
+"status": "resolved",
+"age": "93.9 days ago",
+"link": "forumpost/32905985b6",
+"title": "Bug71-52: kvvfsDecodeJournal Off-by-One in Base-26 Size Decode Causes Permanent Data Loss on Crash Recovery",
+"posts": "7 posts spanning 24.0 hours"
+},
+{
+"status": "resolved",
+"age": "93.9 days ago",
+"link": "forumpost/5061e926c7",
+"title": "Bug72: Integer Overflow in src/os_kv.c kvvfsDecode Zero-Run Counter Bypasses Bounds Check for Heap Buffer Overflow",
+"posts": "2 posts spanning 14.1 hours"
+},
+{
+"status": "resolved",
+"age": "95.5 days ago",
+"link": "forumpost/d4589da961",
+"title": "SQL function \"format('')\" returns NULL",
+"posts": "2 posts spanning 20.1 minutes"
+},
+{
+"status": "resolved",
+"age": "95.8 days ago",
+"link": "forumpost/7058232d21",
+"title": "Vuln70-51: FTS3 fts3IncrmergeLoad (int) Cast Truncates nLeafEst, Suppressing Leaf Flush During Incremental Merge",
+"posts": "2 posts spanning 3.9 hours"
+},
+{
+"status": "resolved",
+"age": "95.8 days ago",
+"link": "forumpost/25b7947f72",
+"title": "Bug69-50: FTS5 Content Table Creation Fails with Duplicate Column Name When locale=1 and nCol >= 115",
+"posts": "2 posts spanning 6.0 hours"
+},
+{
+"status": "resolved",
+"age": "97.7 days ago",
+"link": "forumpost/765ea1c83b",
+"title": "Vuln68-49: OR-to-IN Conversion Loses Column Collation in src/whereexpr.c exprAnalyzeOrTerm",
+"posts": "2 posts spanning 8.7 hours"
+},
+{
+"status": "resolved",
+"age": "98.7 days ago",
+"link": "forumpost/9630227ae9",
+"title": "Vuln66-47: View Linear-Chain Stack Overflow via `selectExpander` -> `viewGetColumnNames` Mutual Recursion",
+"posts": "2 posts spanning 9.7 hours"
+},
+{
+"status": "resolved",
+"age": "98.7 days ago",
+"link": "forumpost/de3c0163ba",
+"title": "Vuln67-48: STAT4 loadStatTbl 32-bit size_t Multiplication Overflow Causes Heap Buffer Overflow",
+"posts": "2 posts spanning 71.0 minutes"
+},
+{
+"status": "resolved",
+"age": "98.8 days ago",
+"link": "forumpost/3e2e900e3d",
+"title": "sqlite3ExprAffinity() Fails to Traverse TK_UPLUS, Causing Wrong Query Results",
+"posts": "3 posts spanning 68.2 minutes"
+},
+{
+"status": "resolved",
+"age": "98.8 days ago",
+"link": "forumpost/21ee6bbe98",
+"title": "sha1_query Zeroblob NULL Pointer Dereference DoS",
+"posts": "2 posts spanning 3.2 hours"
+},
+{
+"status": "not-planned",
+"age": "98.8 days ago",
+"link": "forumpost/47c8655900",
+"title": "SQLite `quote()`/`sqlite3QuoteValue()` Embedded NUL Text Data Loss",
+"posts": "2 posts spanning 19.0 minutes"
+},
+{
+"status": "resolved",
+"age": "99.5 days ago",
+"link": "forumpost/c2b394b30e",
+"title": "Vuln62-43: ALTER TABLE DROP CONSTRAINT Silently Retains DEFAULT, COLLATE and GENERATED Clause Values in the Stored Schema",
+"posts": "4 posts spanning 12.8 hours"
+},
+{
+"status": "resolved",
+"age": "99.5 days ago",
+"link": "forumpost/ecce1e7d65",
+"title": "Vuln65-46: Compile-Time Trigger Chain Stack Overflow in `codeRowTrigger`",
+"posts": "2 posts spanning 10.1 hours"
+},
+{
+"status": "resolved",
+"age": "99.6 days ago",
+"link": "forumpost/c4010e1623",
+"title": "UPSERT RealAffinity Register Mapping Bug with Virtual Generated Columns",
+"posts": "2 posts spanning 6.5 hours"
+},
+{
+"status": "resolved",
+"age": "99.6 days ago",
+"link": "forumpost/dcee11abdc",
+"title": "Vuln64-45: generate_series() Drops WHERE value >= X / > X When X Is a Float Above INT64_MAX",
+"posts": "2 posts spanning 10.9 hours"
+},
+{
+"status": "resolved",
+"age": "99.6 days ago",
+"link": "forumpost/134231180a",
+"title": "Vuln57-38: FTS3 matchinfo() Heap Buffer Overflow via 32-bit size_t Wraparound in fts3MatchinfoSize",
+"posts": "2 posts spanning 29.6 hours"
+},
+{
+"status": "resolved",
+"age": "99.7 days ago",
+"link": "forumpost/0c90299c11",
+"title": "Vuln59-40: FTS5 fts5StructureDecode 32-bit Integer Overflow in nTotal Allocation Causes Heap OOB Write",
+"posts": "2 posts spanning 25.4 hours"
+},
+{
+"status": "resolved",
+"age": "99.8 days ago",
+"link": "forumpost/1559745242",
+"title": "Vuln58-39: FTS5 fts5ParseTokenize Sets nQueryTerm=0 for Colocated Synonym Tokens When tokendata=1",
+"posts": "2 posts spanning 24.7 hours"
+},
+{
+"status": "resolved",
+"age": "99.8 days ago",
+"link": "forumpost/e9ab86efdb",
+"title": "Vuln64-45: JSONB-to-Text Translator Discards Payload Size for NULL/TRUE/FALSE, Injecting Phantom Array Elements",
+"posts": "2 posts spanning 4.9 hours"
+},
+{
+"status": "resolved",
+"age": "99.8 days ago",
+"link": "forumpost/f6b61e86b5",
+"title": "Vuln38-19: decimal_round Loses the Carry-Out Digit and Returns Wrong Result on Carry-Past-MSD Inputs",
+"posts": "7 posts spanning 12.2 days"
+},
+{
+"status": "resolved",
+"age": "100.2 days ago",
+"link": "forumpost/afbc56be7b",
+"title": "Heap buffer overflow (write) in kvvfsDecode() in os_kv.c",
+"posts": "2 posts spanning 3.5 hours"
+},
+{
+"status": "resolved",
+"age": "100.3 days ago",
+"link": "forumpost/5f93fad4e9",
+"title": "Vuln60-41: blobio Extension readblob/writeblob NULL Column Argument Dereferences NULL Pointer in sqlite3StrICmp",
+"posts": "2 posts spanning 6.8 hours"
+},
+{
+"status": "resolved",
+"age": "100.4 days ago",
+"link": "forumpost/8f3d596d61",
+"title": "Vuln61-42: CSV Virtual Table csvtabOpen 32-bit size_t Integer Overflow in nByte Allocation Causes Heap OOB",
+"posts": "2 posts spanning 5.4 hours"
+},
+{
+"status": "resolved",
+"age": "101.5 days ago",
+"link": "forumpost/fd2a52e64d",
+"title": "Backward incompatible output: Order of command-line options \"-header\" and \"-csv\" changes output",
+"posts": "2 posts spanning 6.3 hours"
+},
+{
+"status": "resolved",
+"age": "101.6 days ago",
+"link": "forumpost/d3abdc1a4d",
+"title": "CREATE INDEX with LIKE accepted, then SQLITE_CORRUPT after `PRAGMA case_sensitive_like` change",
+"posts": "2 posts spanning 11.1 hours"
+},
+{
+"status": "resolved",
+"age": "102.1 days ago",
+"link": "forumpost/41b8a3a798",
+"title": "SQLite3 Non-deterministic Function Bypass in CREATE INDEX Expression Validation",
+"posts": "6 posts spanning 5.6 days"
+},
+{
+"status": "resolved",
+"age": "102.6 days ago",
+"link": "forumpost/c75f6942b6",
+"title": "FTS3 `fts3EvalNearTrim()` can overflow the position-list buffer during an in-place NEAR merge",
+"posts": "2 posts spanning 16.4 hours"
+},
+{
+"status": "resolved",
+"age": "102.7 days ago",
+"link": "forumpost/54a4c94d5c",
+"title": "FTS3 `fts3ReadEndBlockField()` negates INT64_MIN text and triggers signed integer overflow",
+"posts": "2 posts spanning 14.7 hours"
+},
+{
+"status": "resolved",
+"age": "102.7 days ago",
+"link": "forumpost/9eae30931b",
+"title": "WAL read-only `readonly_shm` path accepts page-size 0 and over-reads in `walChecksumBytes()`",
+"posts": "2 posts spanning 14.0 hours"
+},
+{
+"status": "resolved",
+"age": "104.5 days ago",
+"link": "forumpost/81155bb6c0",
+"title": "Vuln53-34: FTS5 fts5IndexTombstoneRebuild Signed Integer Overflow on Corrupt Tombstone nElem Field",
+"posts": "2 posts spanning 13.3 hours"
+},
+{
+"status": "resolved",
+"age": "104.8 days ago",
+"link": "forumpost/fb162d3389",
+"title": "Vuln56-37: fileio realpath() Missing OOM Check on mprintf Result Causes strlen(NULL) Crash",
+"posts": "2 posts spanning 2.9 hours"
+},
+{
+"status": "resolved",
+"age": "104.8 days ago",
+"link": "forumpost/97824247b8",
+"title": "Vuln54: RBU rbu_fossil_delta Signed Integer Overflow on Crafted Delta Output Size",
+"posts": "2 posts spanning 3.9 hours"
+},
+{
+"status": "resolved",
+"age": "104.8 days ago",
+"link": "forumpost/f714611b69",
+"title": "Vuln55-36: fossildelta delta_create Missing OOM Check Causes NULL Dereference",
+"posts": "2 posts spanning 2.9 hours"
+},
+{
+"status": "resolved",
+"age": "104.8 days ago",
+"link": "forumpost/2956b79366",
+"title": "Out-of-bounds read in deltaGetInt() when input contains no in-buffer terminator (ext/misc/fossildelta.c)",
+"posts": "4 posts spanning 2.8 hours"
+},
+{
+"status": "resolved",
+"age": "105.6 days ago",
+"link": "forumpost/faa9f8134c",
+"title": "Vuln52-33: replace() Bounds-Check Assert Signed Integer Overflow on Large Strings Under Raised SQLITE_MAX_LENGTH",
+"posts": "3 posts spanning 7.2 hours"
+},
+{
+"status": "resolved",
+"age": "105.8 days ago",
+"link": "forumpost/bdad9d956e",
+"title": "Vuln51-32: FTS5 in-Memory Hash Signed Integer Overflow on Doclist Doubling Reachable Under Raised SQLITE_MAX_LENGTH",
+"posts": "2 posts spanning 5.3 hours"
+},
+{
+"status": "resolved",
+"age": "106.5 days ago",
+"link": "forumpost/09cbafe011",
+"title": "Vuln50-31: FTS5 integrity-check Heap Buffer Over-Read in fts5IndexIntegrityCheckSegment",
+"posts": "2 posts spanning 1.8 hours"
+},
+{
+"status": "resolved",
+"age": "106.6 days ago",
+"link": "forumpost/8e37ce5a73",
+"title": "Vuln49-30: FTS5 Reverse Iterator Heap Buffer Over-Read via Unvalidated szLeaf on Corrupt Segment Leaf",
+"posts": "4 posts spanning 4.3 hours"
+},
+{
+"status": "resolved",
+"age": "106.7 days ago",
+"link": "forumpost/71aed60336",
+"title": "Vuln48-29: FTS5 NEAR Query Heap Use-After-Free via In-Place Poslist Rewrite Realloc",
+"posts": "2 posts spanning 4.9 hours"
+},
+{
+"status": "resolved",
+"age": "106.8 days ago",
+"link": "forumpost/61a46dbef4",
+"title": "Vuln47-28: FTS5 snippet() Signed Integer Overflow on Attacker-Controlled nToken Argument",
+"posts": "2 posts spanning 2.9 hours"
+},
+{
+"status": "resolved",
+"age": "109.6 days ago",
+"link": "forumpost/41a9496625",
+"title": "SELECT DISTINCT ORDER BY returns different row order depending on index usage",
+"posts": "2 posts spanning 14.7 minutes"
+},
+{
+"status": "resolved",
+"age": "110.5 days ago",
+"link": "forumpost/2dbde913df",
+"title": "Vuln46-27: WhereTerm.nChild u8 Wraparound Skips Verification of Vector IN Components Past Index Width",
+"posts": "2 posts spanning 7.0 hours"
+},
+{
+"status": "resolved",
+"age": "110.8 days ago",
+"link": "forumpost/e621aae964",
+"title": "Vuln45-16: pcache1InitBulk do-while Loop Heap Buffer Overflow When -pagecache N=-1 Produces nBulk=0",
+"posts": "2 posts spanning 5.1 hours"
+},
+{
+"status": "resolved",
+"age": "110.8 days ago",
+"link": "forumpost/abb5f6cd10",
+"title": "SQLite uuid_str()/uuid_blob() TEXT Conversion OOM NULL Dereference DoS",
+"posts": "2 posts spanning 1.9 hours"
+},
+{
+"status": "resolved",
+"age": "110.8 days ago",
+"link": "forumpost/2ac8563cce",
+"title": "Vuln44-15: Vector IN Step-6 Ignores aiMap Permutation When the Engine Uses an Index With Reordered Columns",
+"posts": "2 posts spanning 4.8 hours"
+},
+{
+"status": "resolved",
+"age": "110.8 days ago",
+"link": "forumpost/32e5f696ab",
+"title": "wholenumberFilter() INT64 Bound Signed Overflow DoS",
+"posts": "2 posts spanning 1.7 hours"
+},
+{
+"status": "resolved",
+"age": "110.9 days ago",
+"link": "forumpost/c1cdd8a5ac",
+"title": ".import CSV files: treatment of scientific notation has changed",
+"posts": "3 posts spanning 1.6 hours"
+},
+{
+"status": "resolved",
+"age": "111.4 days ago",
+"link": "forumpost/c5f01b5b78",
+"title": "Vuln36-17: ICU LIKE Overlong UTF-8 Sequences Decode to Real Wildcards Bypassing Byte-Level Pattern Sanitization",
+"posts": "2 posts spanning 16.9 hours"
+},
+{
+"status": "resolved",
+"age": "111.5 days ago",
+"link": "forumpost/49bb2d686d",
+"title": "ALTER TABLE ... ALTER ... DROP NOT NULL only removes one not null constraint",
+"posts": "2 posts spanning 7.1 days"
+},
+{
+"status": "resolved",
+"age": "111.5 days ago",
+"link": "forumpost/8655ae13c7",
+"title": "Vuln43: R-Tree nodeRowidIndex Assertion Failure on Oversized Leaf Node via xConnect Accepting Unbounded Node Size",
+"posts": "2 posts spanning 2.1 hours"
+},
+{
+"status": "resolved",
+"age": "111.6 days ago",
+"link": "forumpost/ae661b3c21",
+"title": "Vuln39: percentSort Unbounded Recursion on Adversarial Median-of-Three Pivot Causes Stack Overflow",
+"posts": "2 posts spanning 8.9 hours"
+},
+{
+"status": "resolved",
+"age": "111.6 days ago",
+"link": "forumpost/711ea8c8c3",
+"title": "Vuln37-18: fts3auxGrowStatArray size_t Overflow on 32-bit size_t Causes Heap Buffer Overflow via fts4aux Query",
+"posts": "2 posts spanning 11.0 hours"
+},
+{
+"status": "resolved",
+"age": "111.6 days ago",
+"link": "forumpost/60ef854af0",
+"title": "Vuln35-16: FTS5 fts5DoSecureDelete Heap Over-Read via Unvalidated first-rowid-offset on detail=none Continuation Page",
+"posts": "2 posts spanning 11.1 hours"
+},
+{
+"status": "resolved",
+"age": "111.7 days ago",
+"link": "forumpost/a91766d7e0",
+"title": "Vuln34-15: FTS5 fts5PoslistFilterCallback Inner Varint Loop Missing Bounds Check Causes Heap Buffer Overflow",
+"posts": "2 posts spanning 9.9 hours"
+},
+{
+"status": "resolved",
+"age": "111.7 days ago",
+"link": "forumpost/cdd008eff4",
+"title": "Vuln42-13 zipfile Vtab zipfileResetCursor Leaves Dangling pFreeEntry After Free Causing Use-After-Free on Cursor Reuse",
+"posts": "2 posts spanning 2.2 hours"
+},
+{
+"status": "resolved",
+"age": "111.7 days ago",
+"link": "forumpost/e383985a11",
+"title": "Vuln40-21: qpvtab xBestIndex Reads azColname[-1] When Constraint Targets rowid",
+"posts": "2 posts spanning 5.3 hours"
+},
+{
+"status": "resolved",
+"age": "111.7 days ago",
+"link": "forumpost/48c4e33a8c",
+"title": "sqlite3 -zip malformed ZIP input triggers heap-buffer-overflow reads in zipfile virtual table",
+"posts": "5 posts spanning 5.6 hours"
+},
+{
+"status": "resolved",
+"age": "111.8 days ago",
+"link": "forumpost/9cf6509c05",
+"title": "Vuln33-14: Unbounded fts3SelectLeaf Recursion on Crafted FTS3 Segment Tree Triggers Stack Overflow",
+"posts": "2 posts spanning 7.8 hours"
+},
+{
+"status": "resolved",
+"age": "111.8 days ago",
+"link": "forumpost/49da045bd0",
+"title": "shell.c: function sayAbnormalExit() needs SQLITE_CDECL",
+"posts": "2 posts spanning 4.1 hours"
+},
+{
+"status": "resolved",
+"age": "111.8 days ago",
+"link": "forumpost/84f8b3429c",
+"title": "Vuln41-22: prefixes prefix_length Loop Uses max(nL,nR) Causing Heap Buffer Over-Read Past the Shorter String",
+"posts": "2 posts spanning 3.4 hours"
+},
+{
+"status": "resolved",
+"age": "111.8 days ago",
+"link": "forumpost/815f4d432b",
+"title": "SQLite `compress()` UDF unchecked allocation NULL write DoS",
+"posts": "2 posts spanning 2.5 hours"
+},
+{
+"status": "resolved",
+"age": "112.6 days ago",
+"link": "forumpost/8a07ccdda1",
+"title": "Vuln32-13: COLLATE %s Injection in sqlite3expert idxPopulateOneStat1 Causes idxRemFunc Heap OOB Access",
+"posts": "2 posts spanning 2.1 hours"
+},
+{
+"status": "resolved",
+"age": "112.7 days ago",
+"link": "forumpost/16603315fe",
+"title": "GROUP BY + HAVING + IS NULL Returns Incorrect Result When Using NOT INDEXED",
+"posts": "2 posts spanning 31.8 minutes"
+},
+{
+"status": "resolved",
+"age": "113.4 days ago",
+"link": "forumpost/d9ca705129",
+"title": "integrity_check fails to detect a specifc kind of index corruption",
+"posts": "2 posts spanning 10.5 hours"
+},
+{
+"status": "resolved",
+"age": "113.5 days ago",
+"link": "forumpost/2c00db58f8",
+"title": "Vuln27-8: Transitive Optimization Discards Explicit COLLATE During pLeft Substitution, Dropping Valid Rows",
+"posts": "2 posts spanning 33.5 hours"
+},
+{
+"status": "resolved",
+"age": "113.5 days ago",
+"link": "forumpost/ed88655a9c",
+"title": "Vuln25-4: FULL JOIN USING and NATURAL FULL JOIN Bypass Column-Level Authorizer Checks",
+"posts": "2 posts spanning 1.6 days"
+},
+{
+"status": "resolved",
+"age": "113.6 days ago",
+"link": "forumpost/3e1f60e189",
+"title": "Vuln26-7: Vector IN Step-6 Collation Mismatch Returns FALSE Instead of NULL and Bypasses Blacklist Filters",
+"posts": "2 posts spanning 1.6 days"
+},
+{
+"status": "not-planned",
+"age": "113.6 days ago",
+"link": "forumpost/0e0de74d3d",
+"title": "Makefile.msc: /NODEFAULTLIB:msvcrt on LDFLAGS breaks links under USE_CRT_DLL=1",
+"posts": "2 posts spanning 4.5 hours"
+},
+{
+"status": "resolved",
+"age": "113.6 days ago",
+"link": "forumpost/e12f5f7934",
+"title": "Vuln28: FTS5 Index Iteration Logic Errors Yield Wrong Query Results on Corrupt Databases (Doclist-Index Backward Scan and fts",
+"posts": "2 posts spanning 30.0 hours"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/ba155572cf",
+"title": "Vuln18: ICU Extension icu_load_collation Direct-Leaks UCollator on Invalid Strength Argument",
+"posts": "2 posts spanning 4.4 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/a369443f7e",
+"title": "Vuln19: Unbounded B-tree Traversal in btreeinfo binfoCompute Hangs on Cyclic Child Pointers",
+"posts": "2 posts spanning 4.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/d9975c5b99",
+"title": "Vuln17: Format String Vulnerability in analyze() Extension via Attacker-Controlled Table Names",
+"posts": "2 posts spanning 4.4 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/d4750a4af1",
+"title": "Vuln17: Unsigned Integer Overflow in spellfix editdist1 Wagner Matrix Allocation",
+"posts": "2 posts spanning 11.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/eae13dd041",
+"title": "Vuln15: Signed Integer Overflow in unixShmMap nByte Computation",
+"posts": "2 posts spanning 11.4 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/1693eb8cfd",
+"title": "Vuln13: Transitive Constraint Optimization Drops Valid Rows on Mixed Collation Equality",
+"posts": "2 posts spanning 11.4 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/8770b3c5f6",
+"title": "Vuln12: xfer Optimization Bypasses Authorizer SQLITE_SELECT and SQLITE_READ Checks on Source Table",
+"posts": "2 posts spanning 11.4 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/be56f2161c",
+"title": "Vuln11: Assertion Failure in R-Tree rtreeStepToLeaf Caused by u8 iCell Overflow",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/d96fdf752d",
+"title": "Vuln10: Signed Integer Overflow in spellfix editDist3Core Wagner Matrix Sizing Causes Heap Buffer Overflow",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/43bd5b0820",
+"title": "Vuln9: NULL Pointer Dereference in prefixes prefix_length on SQL NULL Argument",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/66e69d8c58",
+"title": "Vuln8: Unsigned Integer Wraparound and Assertion Failure in fossildelta deltaparsevtabColumn Bounds Check",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/73b028c98f",
+"title": "Vuln7: Signed Integer Overflow and Heap Out-of-Bounds Read in fossildelta delta_parse INSERT iNext Computation",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/2477f5e8f0",
+"title": "Vuln6: Integer Overflow and Double Free in ICU Extension icuCaseFunc16",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/eb539c3654",
+"title": "Vuln5: Stack Overflow in FTS5 Porter Tokenizer via Unbounded Wrapper Chaining",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/c75be5e402",
+"title": "Vuln4: Assertion Failure in FTS5 fts5IndexExtractColset Buffer Append Caused by Unbounded Varint Continuation Loop",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/0840561013",
+"title": "Vuln1: Signed Integer Overflow and Out-of-Bounds Write in FTS3 fts3auxNextMethod Column Index",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/79bb572d76",
+"title": "Vuln2: Signed Integer Overflow in FTS3 NEAR Operator Distance Parsing",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/5336ffc6f9",
+"title": "Vuln3: Heap Out-of-Bounds Write in FTS3 matchinfo('b') Bitmap Index (Off-by-One)",
+"posts": "2 posts spanning 14.3 days"
+},
+{
+"status": "resolved",
+"age": "113.7 days ago",
+"link": "forumpost/c7656d3483",
+"title": "Vuln29-10: prefixes xBestIndex Returns a Degenerate Plan Instead of No-Solution, Causing a NULL VDBE Cursor Dereference",
+"posts": "2 posts spanning 5.3 hours"
+},
+{
+"status": "resolved",
+"age": "113.8 days ago",
+"link": "forumpost/19356679b1",
+"title": "Vuln30: Integer Truncation in zipfile() Aggregate zipfileBufferGrow Causes Heap Buffer Overflow",
+"posts": "2 posts spanning 41.2 minutes"
+},
+{
+"status": "resolved",
+"age": "113.8 days ago",
+"link": "forumpost/4d4221ea3b",
+"title": "Vuln31-12: Integer Overflow in spellfix transliterate() Output Sizing Causes Heap Buffer Overflow",
+"posts": "2 posts spanning 19.6 minutes"
+},
+{
+"status": "resolved",
+"age": "114.5 days ago",
+"link": "forumpost/4cb02920dd",
+"title": "Vuln21-2: Infinite Loop in scrub scrubBackupFreelist on Cyclic Freelist Trunk Chain",
+"posts": "5 posts spanning 34.0 hours"
+},
+{
+"status": "resolved",
+"age": "114.6 days ago",
+"link": "forumpost/e5e476d4be",
+"title": "zipfile heap info leak when rewriting ZIP with embedded NUL in filename",
+"posts": "2 posts spanning 4.1 hours"
+},
+{
+"status": "resolved",
+"age": "114.9 days ago",
+"link": "forumpost/c2cffc6c87",
+"title": "Vuln24-3: Unsigned Integer Overflow in printf %#Q and %#q Quote Sizing Causes Heap Buffer Overflow",
+"posts": "2 posts spanning 7.7 hours"
+},
+{
+"status": "resolved",
+"age": "115.7 days ago",
+"link": "forumpost/104c65355b",
+"title": "Vuln23-4: Missing RTREE_MAX_AUX_COLUMN Bound in geopoly geopolyInit Causes u8 nAux Wraparound",
+"posts": "2 posts spanning 37.2 minutes"
+},
+{
+"status": "resolved",
+"age": "115.8 days ago",
+"link": "forumpost/e40898b752",
+"title": "Vuln22-3: NULL Pointer Dereference in diskused .diskused on Autoindex Record With NULL tbl_name",
+"posts": "2 posts spanning 3.3 hours"
+},
+{
+"status": "resolved",
+"age": "115.8 days ago",
+"link": "forumpost/36b59c1076",
+"title": "Vuln20-1: Heap Buffer Over-Read in scrub scrubBackupVarint on Interior B-tree Cell",
+"posts": "2 posts spanning 3.1 hours"
+},
+{
+"status": "resolved",
+"age": "119.8 days ago",
+"link": "forumpost/d897916aa8",
+"title": "Are vulnerabilities requiring non-default compile-time options in scope?",
+"posts": "2 posts spanning 6.0 hours"
+},
+{
+"status": "resolved",
+"age": "120.3 days ago",
+"link": "forumpost/7864ed90ff",
+"title": "Shell quotes incorrectly symbol \"greater than\" in HTML mode",
+"posts": "2 posts spanning 2.7 hours"
+},
+{
+"status": "resolved",
+"age": "121.5 days ago",
+"link": "forumpost/af2785b887",
+"title": "Aggregated scalar subquery in HAVING clause returns empty set for all contradictory conditions",
+"posts": "2 posts spanning 8.7 hours"
+},
+{
+"status": "resolved",
+"age": "121.5 days ago",
+"link": "forumpost/d59716f683",
+"title": "Scalar subquery in HAVING clause returns incorrect empty results",
+"posts": "2 posts spanning 8.7 hours"
+},
+{
+"status": "resolved",
+"age": "121.5 days ago",
+"link": "forumpost/1742ef30fd",
+"title": "Contradictory WHERE conditions return identical result set in table-view cross join",
+"posts": "2 posts spanning 9.0 hours"
+},
+{
+"status": "resolved",
+"age": "121.5 days ago",
+"link": "forumpost/22a3a53a72",
+"title": "Subquery returning a non-null value in WHERE clause incorrectly evaluates to FALSE and returns zero rows",
+"posts": "4 posts spanning 9.3 hours"
+},
+{
+"status": "resolved",
+"age": "121.5 days ago",
+"link": "forumpost/3e04e39a69",
+"title": "Invalid complementary filtering result for rtree virtual table left join query",
+"posts": "2 posts spanning 8.8 hours"
+},
+{
+"status": "resolved",
+"age": "124.5 days ago",
+"link": "forumpost/a125be9a31",
+"title": "Vuln14: PRAGMA defer_foreign_keys=OFF Zeroes Deferred FK Violation Counters Allowing COMMIT of Orphaned Rows",
+"posts": "3 posts spanning 13.2 hours"
+},
+{
+"status": "resolved",
+"age": "125.7 days ago",
+"link": "forumpost/d3d02c6a54",
+"title": "sqlite3changeset_apply_v3(FKNOACTION) makes later sqlite3session_diff() return SQLITE_SCHEMA",
+"posts": "2 posts spanning 1.8 hours"
+},
+{
+"status": "resolved",
+"age": "126.5 days ago",
+"link": "forumpost/3becabcfb3",
+"title": "CHECK(changes()=0) constraint can be bypassed and insert rows that should have been rejected",
+"posts": "2 posts spanning 2.2 days"
+},
+{
+"status": "resolved",
+"age": "126.5 days ago",
+"link": "forumpost/954255408f",
+"title": "In json, abbreviated form works inconsistently from the full-path form when there is double quote in the key",
+"posts": "2 posts spanning 15.3 hours"
+},
+{
+"status": "resolved",
+"age": "127.4 days ago",
+"link": "forumpost/90da61c0b4",
+"title": "Incorrect result of max() on json_each",
+"posts": "2 posts spanning 4.3 hours"
+},
+{
+"status": "resolved",
+"age": "127.4 days ago",
+"link": "forumpost/6c13952293",
+"title": "json_extract returns different subtype under index",
+"posts": "2 posts spanning 5.7 hours"
+},
+{
+"status": "resolved",
+"age": "127.5 days ago",
+"link": "forumpost/b05e7a99d0",
+"title": "json_set() can construct invalid JSON from a quoted path containing an invalid escape",
+"posts": "2 posts spanning 5.3 hours"
+},
+{
+"status": "resolved",
+"age": "127.5 days ago",
+"link": "forumpost/73b756a998",
+"title": "Incorrect result of json_extract when the key contains NUL",
+"posts": "2 posts spanning 4.8 hours"
+},
+{
+"status": "resolved",
+"age": "127.5 days ago",
+"link": "forumpost/4b9f1eec78",
+"title": "NULL key value causes json_group_object returns incorrect result with window function",
+"posts": "2 posts spanning 5.4 hours"
+},
+{
+"status": "resolved",
+"age": "127.6 days ago",
+"link": "forumpost/8592485be5",
+"title": "Incorrect result of window function, maybe related to OR-to-IN collection",
+"posts": "2 posts spanning 26.7 hours"
+}
+]

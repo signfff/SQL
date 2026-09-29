@@ -10,7 +10,8 @@ import re
 import subprocess
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SQLITE = r"D:\sqlancer\coverage\sqlite\build\sqlite3_cov.exe"
+SQLITE = os.environ.get("SQLITE_RELEASE",
+        r"D:\sqlancer\coverage\sqlite\build\sqlite3_cov.exe")
 
 # The tokens SQLite3EGraphInputCorpus.getEGraphQueryRejectReason refuses, with
 # sqlite3.egraph.corpus.allowJoin set (so JOIN itself is allowed).

@@ -13,11 +13,13 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-RELEASE = r"D:\sqlancer\coverage\sqlite\build\sqlite3_cov.exe"
+RELEASE = os.environ.get("SQLITE_RELEASE",
+        r"D:\sqlancer\coverage\sqlite\build\sqlite3_cov.exe")
 # Built from the GitHub mirror of the canonical tree, which carries the same manifest as the Fossil
 # check-in. Pinned here because trunk moves: a verdict is only reproducible against a fixed build.
 TRUNK_CHECKIN = "75c1ee9de670c6366200df65b3a2c7c8888f709e985b5eaf81d57e562ab65b93"
-TRUNK = os.path.join(r"D:\sqlancer\coverage\sqlite", "trunk", "sqlite3_trunk.exe")
+TRUNK = os.environ.get("SQLITE_TRUNK",
+        r"D:\sqlancer\coverage\sqlite\trunk\sqlite3_trunk.exe")
 
 
 def normalise(output):

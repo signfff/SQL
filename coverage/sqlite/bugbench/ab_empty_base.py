@@ -11,9 +11,10 @@ import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-TEMPLATE = r"D:\sqlancer\coverage\sqlite\manual-long-codecov-20260921-010516\java-args.txt"
-OLD = r"D:\sqlancer\coverage\sqlite\manual-long-codecov-20260921-010516"
-CORPUS_DIR = r"D:\sqlancer\coverage\sqlite"
+TEMPLATE = os.environ.get("EGRAPH_LONGRUN_TEMPLATE",
+        r"D:\sqlancer\coverage\sqlite\manual-long-codecov-20260921-010516\java-args.txt")
+OLD = os.path.dirname(TEMPLATE)
+CORPUS_DIR = os.environ.get("EGRAPH_CORPUS_DIR", r"D:\sqlancer\coverage\sqlite")
 CORPUS_SMALL = ";".join([
     os.path.join(CORPUS_DIR, "sqlite-official-select-only-variant-ready-corpus.sql"),
     os.path.join(CORPUS_DIR, "auto-research-filtered-corpus.sql"),

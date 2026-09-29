@@ -10,8 +10,12 @@ import re
 import subprocess
 import sys
 
-TEMPLATE = r"D:\sqlancer\coverage\sqlite\manual-long-codecov-20260921-010516\java-args.txt"
-OLD = r"D:\sqlancer\coverage\sqlite\manual-long-codecov-20260921-010516"
+# Overridable for machines that keep the long-run template elsewhere: the template file is
+# a @-file of JVM flags captured from a long run, and OLD is the directory its output paths
+# point at, which every run replaces with its own workdir.
+TEMPLATE = os.environ.get("EGRAPH_LONGRUN_TEMPLATE",
+        r"D:\sqlancer\coverage\sqlite\manual-long-codecov-20260921-010516\java-args.txt")
+OLD = os.path.dirname(TEMPLATE)
 
 
 def build_args(corpus, seconds, workdir):
