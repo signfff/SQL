@@ -171,7 +171,13 @@ R-Tree 插入语义实测（sqlite3 3.51）：
 > 2026-09-08。以下每条都会改变 bug 判定语义、吞吐特征或测试目标，属于需要拍板的决定，
 > 所以只记录不实施。已实施的三处基础改动见文末。
 
-## 1. `add-assoc` / `mul-assoc` 在整数溢出边界不成立 —— 删掉还是加守卫
+## 1. ~~`add-assoc` / `mul-assoc` 在整数溢出边界不成立 —— 删掉还是加守卫~~ —— 已删（选项 a）
+
+**2026-09-10 定论：按选项 (a) 删除。** `add-assoc`、`mul-assoc`、`sub-to-add`、
+`sub-antisym` 连同双否定等共 7 条实测不健全规则已从 `sql_rewrite.rs` 移除
+（删除处的注释保留了枚举测量：`add-assoc` 1728 个三元组里 140 个分歧，
+`mul-assoc` 118/1728，`sub-to-add` 5/144，`sub-antisym` 3/144）。当初担心的
+"删掉损失检测面"没有兑现——关掉零代价（见 egraph-unsound-rules-removed 笔记）。
 
 实测（SQLite 3.53.4）：
 
@@ -320,11 +326,24 @@ variant : SELECT ALL * FROM t0            WHERE ...
 - 代价：`assert()` 失败会 `abort()` 整个 JVM，长跑要能从崩溃恢复；`SQLITE_DEBUG` 慢 3-5 倍
 - 副作用：会让 memory 里"插桩构建必须与 sqlite-jdbc 编译选项对齐"那条失效，覆盖率基线要重取
 
-## 5. 单表限制 —— 是否放开 JOIN
+## 5. JOIN —— 已部分放开，剩下的是生成形状
 
-`SQLite3OracleFactory` 里 `targetTables = new AbstractTables<>(singletonList(chosen))`，
-结构上不可能生成 JOIN。而 SQLancer 历史上在 SQLite 找到的 bug 大量集中在
-多表 LEFT JOIN + WHERE 下推。放开需要同时改 egraph 侧（当前规则集没有关系代数规则）。
+历史："`targetTables = singletonList(chosen)`，结构上不可能生成 JOIN" 已不再成立：
+
+- **生成器侧**：`egraph.joinPercent`（默认 0 = 保持单表历史行为）+ `egraph.tables`
+  （默认 1；`SQLite3Provider` 注释记录实测"单加一张表无收益，目标形状要 3 张表嵌套
+  JOIN"）。JOIN 的动机就是官方 nested RIGHT JOIN 报告（三表嵌套、RIGHT、WHERE 缺一
+  不可复现）——已隔离验证我们自己的 IS NULL 规则能把那条查询的 WHERE 改写成
+  不触发 bug 的形式，缺的只是生成那个形状。2026-09-23 修过"长跑里 JOIN 恒为 0"的
+  根因（第二张表必须非空）。`joinPercent` 至今默认 0：见 2026-09-19 的
+  indexedPredicatePercent A/B——多计划率指标早已饱和，靠 JOIN 抬不动。
+- **语料侧**：`sqlite3.egraph.corpus.allowJoin`（默认 false）。随机路径产 JOIN 后，
+  语料通道继续拒绝会让两侧分布漂移，故留开关。bugbench 的 nested RIGHT JOIN 检出
+  （4f3e1f1cd7）就是官方语料带 JOIN、开这个开关过的闸。
+
+egraph 侧仍然没有关系代数规则——但不需要：JOIN 结构来自 base query、两侧共用，
+egraph 只改写其中的 WHERE 表达式。剩下未解决的是让生成器够到"三表嵌套 RIGHT
+JOIN + WHERE 下推"这个具体形状（卡点见 `coverage/sqlite/bugbench/README.md`）。
 
 ## 6. ORDER BY 永久在射程外
 
