@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.stream.Collectors;
 
 /**
  * Asks a build of SQLite's trunk whether a mismatch is one upstream has already fixed.
@@ -257,7 +258,8 @@ public final class EGraphTrunkReferee {
         while (!lines.isEmpty() && lines.get(lines.size() - 1).isBlank()) {
             lines.remove(lines.size() - 1);
         }
-        return String.join("\n", lines.stream().map(line -> line.replaceAll("\\s+$", "")).toList());
+        return String.join("\n", lines.stream().map(line -> line.replaceAll("\\s+$", ""))
+                .collect(Collectors.toList()));
     }
 
     /** Why the last run() gave no answer, for the log line that follows it. */
